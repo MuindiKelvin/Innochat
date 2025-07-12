@@ -25,9 +25,9 @@ class PostCard extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    CircleAvatar(
+                    const CircleAvatar(
                       radius: 20,
-                      backgroundImage: const CachedNetworkImageProvider(
+                      backgroundImage: CachedNetworkImageProvider(
                         'https://via.placeholder.com/150', // Placeholder profile image
                       ),
                     ),
@@ -53,10 +53,10 @@ class PostCard extends StatelessWidget {
                         const Icon(Icons.error),
                   ),
                 if (post.videoUrl != null)
-                  Container(
+                  const SizedBox(
                     height: 200,
                     child:
-                        const Placeholder(), // Replace with VideoPlayer if videoUrl is a valid path
+                        Placeholder(), // Replace with VideoPlayer if videoUrl is a valid path
                   ),
                 Text(post.content),
                 const SizedBox(height: 8),

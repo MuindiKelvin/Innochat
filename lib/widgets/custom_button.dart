@@ -22,11 +22,11 @@ class CustomButton extends StatelessWidget {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
         padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 15),
       ).copyWith(
-        backgroundColor: MaterialStateProperty.resolveWith((states) {
+        backgroundColor: WidgetStateProperty.resolveWith((states) {
           if (gradient != null) {
             return null; // Let gradient handle the background
           }
-          return states.contains(MaterialState.pressed)
+          return states.contains(WidgetState.pressed)
               ? Colors.purple[700]
               : Colors.purple;
         }),

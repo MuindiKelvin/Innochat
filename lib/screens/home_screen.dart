@@ -13,6 +13,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:video_player/video_player.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:share_plus/share_plus.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -28,6 +29,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   final ImagePicker _picker = ImagePicker();
   XFile? _imageFile;
   VideoPlayerController? _videoController;
+
+  // Like tracking
+  final Set<String> _likedPosts = {};
 
   // Animation controllers for background icons
   late AnimationController _backgroundAnimationController;
@@ -132,6 +136,391 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     } else {
       Fluttertoast.showToast(msg: '⚠️ Please write or attach something!');
     }
+  }
+
+  Future<void> _toggleLike(Post post) async {
+    final isLiked = _likedPosts.contains(post.id);
+    setState(() {
+      if (isLiked) {
+        _likedPosts.remove(post.id);
+      } else {
+        _likedPosts.add(post.id);
+      }
+    });
+
+    // Update the like count in the database
+    int newLikeCount = !isLiked ? post.likes + 1 : post.likes - 1;
+    await _databaseService.likePost(post.id, newLikeCount);
+  }
+
+  Future<void> _sharePost(Post post) async {
+    await _databaseService.sharePost(post.id, post.shares + 1);
+    Share.share(post.content);
+  }
+
+  Future<void> _deletePost(Post post) async {
+    // Show confirmation dialog
+    final shouldDelete = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Delete Post', style: GoogleFonts.poppins()),
+        content: Text(
+            'Are you sure you want to delete this post? This action cannot be undone.',
+            style: GoogleFonts.poppins()),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text('Cancel', style: GoogleFonts.poppins()),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: Text('Delete', style: GoogleFonts.poppins()),
+          ),
+        ],
+      ),
+    );
+
+    if (shouldDelete == true) {
+      try {
+        await _databaseService.deletePost(post.id);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content:
+                Text('Post deleted successfully', style: GoogleFonts.poppins()),
+            backgroundColor: Colors.green,
+          ),
+        );
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content:
+                Text('Error deleting post: $e', style: GoogleFonts.poppins()),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _updatePost(Post post) async {
+    final controller = TextEditingController(text: post.content);
+
+    final updatedContent = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Update Post', style: GoogleFonts.poppins()),
+        content: TextField(
+          controller: controller,
+          maxLines: 5,
+          decoration: InputDecoration(
+            hintText: 'Edit your post',
+            hintStyle: GoogleFonts.poppins(),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+          ),
+          style: GoogleFonts.poppins(),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Cancel', style: GoogleFonts.poppins()),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, controller.text),
+            child: Text('Save', style: GoogleFonts.poppins()),
+          ),
+        ],
+      ),
+    );
+
+    if (updatedContent != null &&
+        updatedContent.isNotEmpty &&
+        updatedContent != post.content) {
+      try {
+        await _databaseService.updatePost(post.id, updatedContent);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content:
+                Text('Post updated successfully', style: GoogleFonts.poppins()),
+            backgroundColor: Colors.green,
+          ),
+        );
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content:
+                Text('Error updating post: $e', style: GoogleFonts.poppins()),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Widget _buildBlueBadge() {
+    return Container(
+      margin: const EdgeInsets.only(left: 4),
+      child: const Icon(
+        Icons.verified,
+        color: Colors.blue,
+        size: 16,
+      ),
+    );
+  }
+
+  Widget _buildEnhancedPostCard(Post post) {
+    final user = FirebaseAuth.instance.currentUser!;
+    final isLiked = _likedPosts.contains(post.id);
+    final isOwnPost = post.userId == user.uid;
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.grey.withOpacity(0.1),
+            spreadRadius: 1,
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header with user info and menu
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                CircleAvatar(
+                  backgroundColor: Colors.deepPurple,
+                  child: Text(
+                    post.username[0].toUpperCase(),
+                    style: GoogleFonts.poppins(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Row(
+                    children: [
+                      Text(
+                        post.username,
+                        style: GoogleFonts.poppins(
+                          fontWeight: FontWeight.w600,
+                          fontSize: 16,
+                        ),
+                      ),
+                      _buildBlueBadge(),
+                    ],
+                  ),
+                ),
+                if (isOwnPost)
+                  PopupMenuButton<String>(
+                    onSelected: (value) {
+                      if (value == 'delete') _deletePost(post);
+                      if (value == 'update') _updatePost(post);
+                    },
+                    itemBuilder: (context) => [
+                      PopupMenuItem(
+                        value: 'update',
+                        child: Row(
+                          children: [
+                            const Icon(Icons.edit, color: Colors.blue),
+                            const SizedBox(width: 8),
+                            Text('Update', style: GoogleFonts.poppins()),
+                          ],
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 'delete',
+                        child: Row(
+                          children: [
+                            const Icon(Icons.delete, color: Colors.red),
+                            const SizedBox(width: 8),
+                            Text('Delete', style: GoogleFonts.poppins()),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+              ],
+            ),
+          ),
+
+          // Post content
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Text(
+              post.content,
+              style: GoogleFonts.poppins(fontSize: 14),
+            ),
+          ),
+
+          const SizedBox(height: 16),
+
+          // Post stats
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  '${post.likes} likes • ${post.shares} shares',
+                  style: GoogleFonts.poppins(
+                    color: Colors.grey[600],
+                    fontSize: 12,
+                  ),
+                ),
+                Text(
+                  '${post.comments} comments',
+                  style: GoogleFonts.poppins(
+                    color: Colors.grey[600],
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 12),
+
+          // Action buttons
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.grey[50],
+              borderRadius: const BorderRadius.only(
+                bottomLeft: Radius.circular(16),
+                bottomRight: Radius.circular(16),
+              ),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                // Like button
+                InkWell(
+                  onTap: () => _toggleLike(post),
+                  borderRadius: BorderRadius.circular(20),
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: isLiked ? Colors.deepPurple : Colors.transparent,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: Colors.deepPurple,
+                        width: 1,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          isLiked ? Icons.thumb_up : Icons.thumb_up_outlined,
+                          color: isLiked ? Colors.white : Colors.deepPurple,
+                          size: 16,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          'Like',
+                          style: GoogleFonts.poppins(
+                            color: isLiked ? Colors.white : Colors.deepPurple,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+                // Share button
+                InkWell(
+                  onTap: () => _sharePost(post),
+                  borderRadius: BorderRadius.circular(20),
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: Colors.deepPurple,
+                        width: 1,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.share,
+                          color: Colors.deepPurple,
+                          size: 16,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          'Share',
+                          style: GoogleFonts.poppins(
+                            color: Colors.deepPurple,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+                // Comment button
+                InkWell(
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => PostDetailsScreen(post: post),
+                    ),
+                  ),
+                  borderRadius: BorderRadius.circular(20),
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: Colors.deepPurple,
+                        width: 1,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.comment_outlined,
+                          color: Colors.deepPurple,
+                          size: 16,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          'Comment',
+                          style: GoogleFonts.poppins(
+                            color: Colors.deepPurple,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -340,7 +729,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 ),
               ),
 
-              // Posts Section with transparent background
+              // Posts Section with enhanced post cards
               Expanded(
                 child: Container(
                   decoration: BoxDecoration(
@@ -359,7 +748,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                           child: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              Text(
+                              const Text(
                                 '📭',
                                 style: TextStyle(fontSize: 60),
                               ),
@@ -381,15 +770,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                         itemCount: snapshot.data!.length,
                         itemBuilder: (context, index) {
                           final post = snapshot.data![index];
-                          return PostCard(
-                            post: post,
-                            onTap: () => Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => PostDetailsScreen(post: post),
-                              ),
-                            ),
-                          );
+                          return _buildEnhancedPostCard(post);
                         },
                       );
                     },

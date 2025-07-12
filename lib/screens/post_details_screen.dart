@@ -7,6 +7,8 @@ import 'package:innochat/widgets/post_card.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
+import 'package:image_picker/image_picker.dart';
+import 'dart:io';
 
 class PostDetailsScreen extends StatefulWidget {
   final Post post;
@@ -21,7 +23,7 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
   final user = FirebaseAuth.instance.currentUser!;
   bool _isEmojiVisible = false;
   bool _isLiked = false;
-  Set<String> _likedPosts = {}; // Track liked posts locally
+  final Set<String> _likedPosts = {}; // Track liked posts locally
 
   @override
   void initState() {
@@ -179,6 +181,25 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
     }
   }
 
+  // Blue badge widget for verified users
+  Widget _buildBlueBadge() {
+    return Container(
+      margin: const EdgeInsets.only(left: 4),
+      child: Icon(
+        Icons.verified,
+        color: Colors.blue,
+        size: 16,
+      ),
+    );
+  }
+
+  // Media display widget - simplified version
+  Widget _buildMediaDisplay(String? imagePath) {
+    // For now, we'll just show a placeholder for media
+    // You can enhance this later when you add media fields to your Post model
+    return const SizedBox.shrink();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -231,7 +252,87 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
           return SingleChildScrollView(
             child: Column(
               children: [
-                PostCard(post: post, onTap: () {}),
+                // Enhanced Post Card with media support
+                Container(
+                  margin: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.grey.withOpacity(0.1),
+                        spreadRadius: 1,
+                        blurRadius: 6,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // User info with blue badge
+                        Row(
+                          children: [
+                            CircleAvatar(
+                              backgroundColor: Colors.deepPurple,
+                              child: Text(
+                                post.username[0].toUpperCase(),
+                                style: GoogleFonts.poppins(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Row(
+                                children: [
+                                  Text(
+                                    post.username,
+                                    style: GoogleFonts.poppins(
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                  _buildBlueBadge(), // Blue badge for all users
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        // Post content
+                        Text(
+                          post.content,
+                          style: GoogleFonts.poppins(fontSize: 14),
+                        ),
+                        const SizedBox(height: 12),
+                        // Post stats
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              '${post.likes} likes • ${post.shares} shares',
+                              style: GoogleFonts.poppins(
+                                color: Colors.grey[600],
+                                fontSize: 12,
+                              ),
+                            ),
+                            Text(
+                              '${post.comments} comments',
+                              style: GoogleFonts.poppins(
+                                color: Colors.grey[600],
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
 
                 // Enhanced Action Buttons
                 Padding(
@@ -379,11 +480,16 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
                                 ),
                               ),
                             ),
-                            title: Text(
-                              comment['username'],
-                              style: GoogleFonts.poppins(
-                                fontWeight: FontWeight.w600,
-                              ),
+                            title: Row(
+                              children: [
+                                Text(
+                                  comment['username'],
+                                  style: GoogleFonts.poppins(
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                _buildBlueBadge(), // Blue badge for commenters too
+                              ],
                             ),
                             subtitle: Text(
                               comment['content'],
@@ -396,8 +502,8 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
                   },
                 ),
 
-                // Comment Input
-                CommentInput(
+                // Enhanced Comment Input with basic media support
+                EnhancedCommentInput(
                   onComment: (comment) async {
                     if (comment.isNotEmpty) {
                       await _databaseService.addComment(
@@ -434,6 +540,203 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
           );
         },
       ),
+    );
+  }
+}
+
+// Enhanced Comment Input Widget with basic media support
+class EnhancedCommentInput extends StatefulWidget {
+  final Function(String comment) onComment;
+  final VoidCallback onEmojiToggle;
+
+  const EnhancedCommentInput({
+    Key? key,
+    required this.onComment,
+    required this.onEmojiToggle,
+  }) : super(key: key);
+
+  @override
+  _EnhancedCommentInputState createState() => _EnhancedCommentInputState();
+}
+
+class _EnhancedCommentInputState extends State<EnhancedCommentInput> {
+  final TextEditingController _controller = TextEditingController();
+  final ImagePicker _imagePicker = ImagePicker();
+  File? _selectedImage;
+  bool _showImageOptions = false;
+
+  Future<void> _pickImage() async {
+    final result = await showModalBottomSheet<String>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(Icons.photo_library),
+              title: Text('Photo from Gallery'),
+              onTap: () => Navigator.pop(context, 'gallery'),
+            ),
+            ListTile(
+              leading: Icon(Icons.camera_alt),
+              title: Text('Take Photo'),
+              onTap: () => Navigator.pop(context, 'camera'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (result != null) {
+      try {
+        XFile? file;
+        if (result == 'gallery') {
+          file = await _imagePicker.pickImage(source: ImageSource.gallery);
+        } else if (result == 'camera') {
+          file = await _imagePicker.pickImage(source: ImageSource.camera);
+        }
+
+        if (file != null) {
+          setState(() {
+            _selectedImage = File(file!.path);
+          });
+        }
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error selecting image: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _submitComment() async {
+    String commentText = _controller.text;
+
+    // If there's an image, you could upload it here and get a URL
+    // For now, we'll just mention that an image was attached
+    if (_selectedImage != null) {
+      commentText += ' [Image attached]';
+    }
+
+    widget.onComment(commentText);
+
+    setState(() {
+      _controller.clear();
+      _selectedImage = null;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.grey.withOpacity(0.1),
+            spreadRadius: 1,
+            blurRadius: 6,
+            offset: const Offset(0, -2),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          if (_selectedImage != null)
+            Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              height: 100,
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.grey[300]!),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Stack(
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.file(
+                      _selectedImage!,
+                      fit: BoxFit.cover,
+                      width: double.infinity,
+                    ),
+                  ),
+                  Positioned(
+                    top: 4,
+                    right: 4,
+                    child: GestureDetector(
+                      onTap: () => setState(() {
+                        _selectedImage = null;
+                      }),
+                      child: Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          color: Colors.black54,
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(Icons.close, color: Colors.white, size: 16),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _controller,
+                  decoration: InputDecoration(
+                    hintText: 'Add a comment...',
+                    hintStyle: GoogleFonts.poppins(),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(25),
+                      borderSide: BorderSide.none,
+                    ),
+                    filled: true,
+                    fillColor: Colors.grey[100],
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
+                  ),
+                  style: GoogleFonts.poppins(),
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton(
+                onPressed: _pickImage,
+                icon: Icon(Icons.photo_camera, color: Colors.deepPurple),
+              ),
+              IconButton(
+                onPressed: widget.onEmojiToggle,
+                icon: Icon(Icons.emoji_emotions, color: Colors.deepPurple),
+              ),
+              IconButton(
+                onPressed: _submitComment,
+                icon: Icon(Icons.send, color: Colors.deepPurple),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Simplified TextEditingController extension for emoji support
+extension CommentInputController on TextEditingController {
+  void insertEmoji(String emoji) {
+    final currentText = text;
+    final selection = this.selection;
+
+    final newText = currentText.substring(0, selection.start) +
+        emoji +
+        currentText.substring(selection.end);
+
+    text = newText;
+    this.selection = TextSelection.collapsed(
+      offset: selection.start + emoji.length,
     );
   }
 }

@@ -64,8 +64,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   String? _validateEmail(String value) {
     if (value.isEmpty) return 'Email is required';
-    if (!EmailValidator.validate(value.trim()))
+    if (!EmailValidator.validate(value.trim())) {
       return 'Please enter a valid email';
+    }
     if (value.trim().length > 254) return 'Email is too long';
     return null;
   }
@@ -74,26 +75,33 @@ class _RegisterScreenState extends State<RegisterScreen> {
     if (value.isEmpty) return 'Password is required';
     if (value.length < 8) return 'Password must be at least 8 characters';
     if (value.length > 128) return 'Password is too long';
-    if (!value.contains(RegExp(r'[A-Z]')))
+    if (!value.contains(RegExp(r'[A-Z]'))) {
       return 'Password must contain an uppercase letter';
-    if (!value.contains(RegExp(r'[a-z]')))
+    }
+    if (!value.contains(RegExp(r'[a-z]'))) {
       return 'Password must contain a lowercase letter';
-    if (!value.contains(RegExp(r'[0-9]')))
+    }
+    if (!value.contains(RegExp(r'[0-9]'))) {
       return 'Password must contain a number';
-    if (!value.contains(RegExp(r'[!@#$%^&*(),.?":{}|<>]')))
+    }
+    if (!value.contains(RegExp(r'[!@#$%^&*(),.?":{}|<>]'))) {
       return 'Password must contain a special character';
+    }
     return null;
   }
 
   String? _validateUsername(String value) {
     if (value.isEmpty) return 'Username is required';
-    if (value.trim().length < 3)
+    if (value.trim().length < 3) {
       return 'Username must be at least 3 characters';
+    }
     if (value.trim().length > 30) return 'Username is too long';
-    if (!RegExp(r'^[a-zA-Z0-9_]+$').hasMatch(value.trim()))
+    if (!RegExp(r'^[a-zA-Z0-9_]+$').hasMatch(value.trim())) {
       return 'Username can only contain letters, numbers, and underscores';
-    if (value.trim().startsWith('_') || value.trim().endsWith('_'))
+    }
+    if (value.trim().startsWith('_') || value.trim().endsWith('_')) {
       return 'Username cannot start or end with underscore';
+    }
     return null;
   }
 
