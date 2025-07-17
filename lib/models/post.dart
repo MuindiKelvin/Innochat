@@ -9,6 +9,8 @@ class Post {
   final int shares;
   final String? imageUrl;
   final String? videoUrl;
+  final String? documentUrl;
+  final String? documentName;
 
   Post({
     required this.id,
@@ -21,6 +23,8 @@ class Post {
     this.shares = 0,
     this.imageUrl,
     this.videoUrl,
+    this.documentUrl,
+    this.documentName,
   });
 
   factory Post.fromMap(Map<String, dynamic> data, String id) {
@@ -35,6 +39,8 @@ class Post {
       shares: data['shares'] ?? 0,
       imageUrl: data['imageUrl'],
       videoUrl: data['videoUrl'],
+      documentUrl: data['documentUrl'],
+      documentName: data['documentName'],
     );
   }
 
@@ -49,6 +55,8 @@ class Post {
       'shares': shares,
       'imageUrl': imageUrl,
       'videoUrl': videoUrl,
+      'documentUrl': documentUrl,
+      'documentName': documentName,
     };
   }
 }
