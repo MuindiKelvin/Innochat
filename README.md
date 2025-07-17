@@ -1,6 +1,6 @@
 # innochat
 
-A new Flutter project.
+The InnoChat project leverages a robust technology stack to deliver its functionality. It is built using Flutter, a cross-platform framework that enables the creation of natively compiled applications for mobile from a single codebase, ensuring a consistent experience across Android and iOS. Firebase serves as the backend, providing real-time database capabilities through Cloud Firestore, user authentication via Firebase Auth, and additional services like cloud storage for potential media assets. The application utilizes Dart for app logic, with dependencies including `emoji_picker_flutter` for emoji support, `google_fonts` for typography, and `animate_do` for animations. The infrastructure is supported by Gradle for Android build management, ensuring compatibility with modern JVM targets (e.g., Java 11), and is hosted on a local development environment with plans for cloud deployment to handle scalability.
 
 ## Getting Started
 
