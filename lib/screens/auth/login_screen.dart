@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:innochat/screens/auth/register_screen.dart';
 import 'package:innochat/services/auth_service.dart';
-import 'package:innochat/theme/app_theme.dart';
 import 'package:innochat/widgets/custom_button.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:email_validator/email_validator.dart';

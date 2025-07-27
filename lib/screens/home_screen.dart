@@ -15,6 +15,9 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:flutter_pdfview/flutter_pdfview.dart';
+import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -127,10 +130,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             await controller.initialize();
             if (mounted) {
               _videoControllers[post.id] = controller;
-              _videoPlayingNotifiers[post.id] =
-                  ValueNotifier<bool>(true); // Track play state
+              _videoPlayingNotifiers[post.id] = ValueNotifier<bool>(
+                  false); // Changed from true to false - no auto-play
               controller.setLooping(true);
-              controller.play();
+              // REMOVED: controller.play(); - Videos will not auto-play
               controller.addListener(() {
                 final isPlaying = controller.value.isPlaying;
                 if (_videoPlayingNotifiers[post.id]?.value != isPlaying) {
@@ -163,8 +166,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       _videoController = VideoPlayerController.file(File(video.path))
         ..initialize().then((_) {
           setState(() {});
-          _videoController!.play();
-          _videoController!.setLooping(true);
+          // Don't auto-play preview video either
         });
     }
   }
@@ -172,7 +174,16 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   Future<void> _pickDocument() async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions: ['pdf', 'doc', 'docx'],
+      allowedExtensions: [
+        'pdf',
+        'doc',
+        'docx',
+        'txt',
+        'xlsx',
+        'xls',
+        'ppt',
+        'pptx'
+      ],
     );
     if (result != null) {
       setState(() => _documentFile = result.files.first);
@@ -435,22 +446,87 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 
-  Future<void> _openDocument(String documentUrl) async {
+  // Enhanced document opening with in-app viewer
+  Future<void> _openDocument(String documentUrl, String documentName) async {
     try {
-      final url = Uri.parse(documentUrl);
-      final isLaunching = await canLaunchUrl(url);
-      if (isLaunching) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Opening document...', style: GoogleFonts.poppins()),
-            duration: const Duration(seconds: 2),
-          ),
-        );
-        await launchUrl(url, mode: LaunchMode.externalApplication);
+      // Show loading indicator
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const Center(
+          child: SpinKitFadingCircle(color: Colors.deepPurple),
+        ),
+      );
+
+      // Check if it's a PDF document
+      if (documentName.toLowerCase().endsWith('.pdf')) {
+        // Download and cache the PDF
+        final response = await http.get(Uri.parse(documentUrl));
+        if (response.statusCode == 200) {
+          final bytes = response.bodyBytes;
+          final dir = await getTemporaryDirectory();
+          final file = File('${dir.path}/$documentName');
+          await file.writeAsBytes(bytes);
+
+          // Close loading dialog
+          Navigator.pop(context);
+
+          // Open PDF viewer
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => PDFViewerScreen(
+                filePath: file.path,
+                title: documentName,
+              ),
+            ),
+          );
+        } else {
+          Navigator.pop(context);
+          throw Exception('Failed to download PDF');
+        }
+      } else if (documentName.toLowerCase().endsWith('.txt')) {
+        // Handle text files
+        final response = await http.get(Uri.parse(documentUrl));
+        if (response.statusCode == 200) {
+          final content = response.body;
+          Navigator.pop(context);
+
+          // Show text content in a dialog
+          showDialog(
+            context: context,
+            builder: (context) => TextDocumentViewer(
+              content: content,
+              title: documentName,
+            ),
+          );
+        } else {
+          Navigator.pop(context);
+          throw Exception('Failed to load text file');
+        }
       } else {
-        Fluttertoast.showToast(msg: '⚠️ Cannot open document: Invalid URL');
+        // For other document types, fall back to external launch
+        Navigator.pop(context);
+        final url = Uri.parse(documentUrl);
+        final isLaunching = await canLaunchUrl(url);
+        if (isLaunching) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content:
+                  Text('Opening document...', style: GoogleFonts.poppins()),
+              duration: const Duration(seconds: 2),
+            ),
+          );
+          await launchUrl(url, mode: LaunchMode.externalApplication);
+        } else {
+          Fluttertoast.showToast(msg: '⚠️ Cannot open document: Invalid URL');
+        }
       }
     } catch (e) {
+      // Close loading dialog if still open
+      if (Navigator.canPop(context)) {
+        Navigator.pop(context);
+      }
       Fluttertoast.showToast(msg: '⚠️ Error opening document: $e');
     }
   }
@@ -610,7 +686,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                             child:
                                 SpinKitFadingCircle(color: Colors.deepPurple),
                           ),
-                    // Video controls
+                    // Enhanced video controls with better UI
                     if (videoController.value.isInitialized &&
                         isPlayingNotifier != null)
                       ValueListenableBuilder<bool>(
@@ -633,32 +709,30 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                                   height: double.infinity,
                                 ),
                               ),
-                              if (!isPlaying &&
-                                  videoController.value.position ==
-                                      videoController.value.duration)
-                                IconButton(
-                                  icon: const Icon(
-                                    Icons.replay,
-                                    color: Colors.white,
-                                    size: 48,
+                              // Show play button when video is not playing
+                              if (!isPlaying)
+                                Container(
+                                  decoration: BoxDecoration(
+                                    color: Colors.black.withOpacity(0.6),
+                                    shape: BoxShape.circle,
                                   ),
-                                  onPressed: () {
-                                    videoController.seekTo(Duration.zero);
-                                    videoController.play();
-                                  },
-                                ),
-                              if (!isPlaying &&
-                                  videoController.value.position !=
-                                      videoController.value.duration)
-                                IconButton(
-                                  icon: const Icon(
-                                    Icons.play_arrow,
-                                    color: Colors.white,
-                                    size: 48,
+                                  child: IconButton(
+                                    icon: Icon(
+                                      videoController.value.position ==
+                                              videoController.value.duration
+                                          ? Icons.replay
+                                          : Icons.play_arrow,
+                                      color: Colors.white,
+                                      size: 48,
+                                    ),
+                                    onPressed: () {
+                                      if (videoController.value.position ==
+                                          videoController.value.duration) {
+                                        videoController.seekTo(Duration.zero);
+                                      }
+                                      videoController.play();
+                                    },
                                   ),
-                                  onPressed: () {
-                                    videoController.play();
-                                  },
                                 ),
                               Positioned(
                                 bottom: 8,
@@ -683,26 +757,70 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               ),
             ),
           ],
+          // Enhanced document display with preview and better styling
           if (post.documentUrl != null && post.documentUrl!.isNotEmpty) ...[
             const SizedBox(height: 16),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: InkWell(
-                onTap: () => _openDocument(post.documentUrl!),
-                child: Row(
-                  children: [
-                    const Icon(Icons.description, color: Colors.deepPurple),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        post.documentName ?? 'Document',
-                        style: GoogleFonts.poppins(
-                          color: Colors.deepPurple,
-                          decoration: TextDecoration.underline,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.grey[50],
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.grey[300]!),
+                ),
+                child: InkWell(
+                  onTap: () => _openDocument(
+                      post.documentUrl!, post.documentName ?? 'Document'),
+                  borderRadius: BorderRadius.circular(12),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: _getDocumentColor(post.documentName ?? ''),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Icon(
+                            _getDocumentIcon(post.documentName ?? ''),
+                            color: Colors.white,
+                            size: 24,
+                          ),
                         ),
-                      ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                post.documentName ?? 'Document',
+                                style: GoogleFonts.poppins(
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 14,
+                                ),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                'Tap to open',
+                                style: GoogleFonts.poppins(
+                                  color: Colors.grey[600],
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Icon(
+                          Icons.open_in_new,
+                          color: Colors.grey[600],
+                          size: 20,
+                        ),
+                      ],
                     ),
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -865,6 +983,49 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         ],
       ),
     );
+  }
+
+  // Helper methods for document icons and colors
+  IconData _getDocumentIcon(String fileName) {
+    final extension = fileName.toLowerCase().split('.').last;
+    switch (extension) {
+      case 'pdf':
+        return Icons.picture_as_pdf;
+      case 'doc':
+      case 'docx':
+        return Icons.description;
+      case 'txt':
+        return Icons.text_snippet;
+      case 'xls':
+      case 'xlsx':
+        return Icons.table_chart;
+      case 'ppt':
+      case 'pptx':
+        return Icons.slideshow;
+      default:
+        return Icons.insert_drive_file;
+    }
+  }
+
+  Color _getDocumentColor(String fileName) {
+    final extension = fileName.toLowerCase().split('.').last;
+    switch (extension) {
+      case 'pdf':
+        return Colors.red;
+      case 'doc':
+      case 'docx':
+        return Colors.blue;
+      case 'txt':
+        return Colors.grey;
+      case 'xls':
+      case 'xlsx':
+        return Colors.green;
+      case 'ppt':
+      case 'pptx':
+        return Colors.orange;
+      default:
+        return Colors.deepPurple;
+    }
   }
 
   @override
@@ -1116,34 +1277,32 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                                     height: double.infinity,
                                   ),
                                 ),
-                                if (!_videoController!.value.isPlaying &&
-                                    _videoController!.value.position ==
-                                        _videoController!.value.duration)
-                                  IconButton(
-                                    icon: const Icon(
-                                      Icons.replay,
-                                      color: Colors.white,
-                                      size: 48,
+                                // Enhanced preview video controls
+                                if (!_videoController!.value.isPlaying)
+                                  Container(
+                                    decoration: BoxDecoration(
+                                      color: Colors.black.withOpacity(0.6),
+                                      shape: BoxShape.circle,
                                     ),
-                                    onPressed: () {
-                                      _videoController!.seekTo(Duration.zero);
-                                      _videoController!.play();
-                                      setState(() {});
-                                    },
-                                  ),
-                                if (!_videoController!.value.isPlaying &&
-                                    _videoController!.value.position !=
-                                        _videoController!.value.duration)
-                                  IconButton(
-                                    icon: const Icon(
-                                      Icons.play_arrow,
-                                      color: Colors.white,
-                                      size: 48,
+                                    child: IconButton(
+                                      icon: Icon(
+                                        _videoController!.value.position ==
+                                                _videoController!.value.duration
+                                            ? Icons.replay
+                                            : Icons.play_arrow,
+                                        color: Colors.white,
+                                        size: 32,
+                                      ),
+                                      onPressed: () {
+                                        if (_videoController!.value.position ==
+                                            _videoController!.value.duration) {
+                                          _videoController!
+                                              .seekTo(Duration.zero);
+                                        }
+                                        _videoController!.play();
+                                        setState(() {});
+                                      },
                                     ),
-                                    onPressed: () {
-                                      _videoController!.play();
-                                      setState(() {});
-                                    },
                                   ),
                                 Positioned(
                                   bottom: 8,
@@ -1166,20 +1325,30 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                       ],
                       if (_documentFile != null) ...[
                         const SizedBox(height: 10),
-                        Row(
-                          children: [
-                            const Icon(Icons.description, color: Colors.green),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                _documentFile!.name,
-                                style: GoogleFonts.poppins(
-                                  color: Colors.green,
-                                  fontSize: 12,
+                        Container(
+                          decoration: BoxDecoration(
+                            color: Colors.grey[50],
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.grey[300]!),
+                          ),
+                          padding: const EdgeInsets.all(12),
+                          child: Row(
+                            children: [
+                              Icon(
+                                _getDocumentIcon(_documentFile!.name),
+                                color: _getDocumentColor(_documentFile!.name),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  _documentFile!.name,
+                                  style: GoogleFonts.poppins(
+                                    fontSize: 12,
+                                  ),
                                 ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ],
                     ],
@@ -1270,6 +1439,269 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 }
 
+// PDF Viewer Screen
+class PDFViewerScreen extends StatefulWidget {
+  final String filePath;
+  final String title;
+
+  const PDFViewerScreen({
+    super.key,
+    required this.filePath,
+    required this.title,
+  });
+
+  @override
+  _PDFViewerScreenState createState() => _PDFViewerScreenState();
+}
+
+class _PDFViewerScreenState extends State<PDFViewerScreen> {
+  int? totalPages = 0;
+  int currentPage = 0;
+  bool isReady = false;
+  String errorMessage = '';
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          widget.title,
+          style: GoogleFonts.poppins(fontSize: 16),
+          overflow: TextOverflow.ellipsis,
+        ),
+        backgroundColor: Colors.deepPurple,
+        foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.share),
+            onPressed: () {
+              Share.shareXFiles([XFile(widget.filePath)]);
+            },
+          ),
+        ],
+      ),
+      body: Stack(
+        children: [
+          PDFView(
+            filePath: widget.filePath,
+            enableSwipe: true,
+            swipeHorizontal: false,
+            autoSpacing: false,
+            pageFling: true,
+            pageSnap: true,
+            defaultPage: currentPage,
+            fitPolicy: FitPolicy.BOTH,
+            preventLinkNavigation: false,
+            onRender: (pages) {
+              setState(() {
+                totalPages = pages;
+                isReady = true;
+              });
+            },
+            onError: (error) {
+              setState(() {
+                errorMessage = error.toString();
+              });
+            },
+            onPageError: (page, error) {
+              setState(() {
+                errorMessage = '$page: ${error.toString()}';
+              });
+            },
+            onViewCreated: (PDFViewController pdfViewController) {
+              // PDF controller can be used for additional controls
+            },
+            onLinkHandler: (String? uri) {
+              // Handle link clicks in PDF
+            },
+            onPageChanged: (int? page, int? total) {
+              setState(() {
+                currentPage = page ?? 0;
+              });
+            },
+          ),
+          if (errorMessage.isNotEmpty)
+            Center(
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                margin: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.red[50],
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.red[200]!),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.error, color: Colors.red, size: 48),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Error loading PDF',
+                      style: GoogleFonts.poppins(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.red[800],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      errorMessage,
+                      style: GoogleFonts.poppins(
+                        fontSize: 14,
+                        color: Colors.red[600],
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          if (!isReady && errorMessage.isEmpty)
+            const Center(
+              child: SpinKitFadingCircle(color: Colors.deepPurple),
+            ),
+        ],
+      ),
+      bottomNavigationBar: isReady
+          ? Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.grey.withOpacity(0.2),
+                    spreadRadius: 1,
+                    blurRadius: 5,
+                    offset: const Offset(0, -2),
+                  ),
+                ],
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    'Page ${currentPage + 1} of $totalPages',
+                    style: GoogleFonts.poppins(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            )
+          : null,
+    );
+  }
+}
+
+// Text Document Viewer Dialog
+class TextDocumentViewer extends StatelessWidget {
+  final String content;
+  final String title;
+
+  const TextDocumentViewer({
+    super.key,
+    required this.content,
+    required this.title,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      child: Container(
+        width: MediaQuery.of(context).size.width * 0.9,
+        height: MediaQuery.of(context).size.height * 0.8,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Column(
+          children: [
+            // Header
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.deepPurple,
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(16),
+                  topRight: Radius.circular(16),
+                ),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.text_snippet, color: Colors.white),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: GoogleFonts.poppins(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+            ),
+            // Content
+            Expanded(
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                child: SingleChildScrollView(
+                  child: Text(
+                    content,
+                    style: GoogleFonts.poppins(
+                      fontSize: 14,
+                      height: 1.5,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            // Footer with actions
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.grey[50],
+                borderRadius: const BorderRadius.only(
+                  bottomLeft: Radius.circular(16),
+                  bottomRight: Radius.circular(16),
+                ),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton.icon(
+                    onPressed: () {
+                      Share.share(content, subject: title);
+                    },
+                    icon: const Icon(Icons.share),
+                    label: Text('Share', style: GoogleFonts.poppins()),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.deepPurple,
+                      foregroundColor: Colors.white,
+                    ),
+                    child: Text('Close', style: GoogleFonts.poppins()),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class FullScreenVideoPlayer extends StatefulWidget {
   final VideoPlayerController controller;
 
@@ -1333,31 +1765,43 @@ class _FullScreenVideoPlayerState extends State<FullScreenVideoPlayer> {
                     widget.controller.value.position ==
                         widget.controller.value.duration)
                   Center(
-                    child: IconButton(
-                      icon: const Icon(
-                        Icons.replay,
-                        color: Colors.white,
-                        size: 64,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.6),
+                        shape: BoxShape.circle,
                       ),
-                      onPressed: () {
-                        widget.controller.seekTo(Duration.zero);
-                        widget.controller.play();
-                      },
+                      child: IconButton(
+                        icon: const Icon(
+                          Icons.replay,
+                          color: Colors.white,
+                          size: 64,
+                        ),
+                        onPressed: () {
+                          widget.controller.seekTo(Duration.zero);
+                          widget.controller.play();
+                        },
+                      ),
                     ),
                   ),
                 if (!isPlaying &&
                     widget.controller.value.position !=
                         widget.controller.value.duration)
                   Center(
-                    child: IconButton(
-                      icon: const Icon(
-                        Icons.play_arrow,
-                        color: Colors.white,
-                        size: 64,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.6),
+                        shape: BoxShape.circle,
                       ),
-                      onPressed: () {
-                        widget.controller.play();
-                      },
+                      child: IconButton(
+                        icon: const Icon(
+                          Icons.play_arrow,
+                          color: Colors.white,
+                          size: 64,
+                        ),
+                        onPressed: () {
+                          widget.controller.play();
+                        },
+                      ),
                     ),
                   ),
                 Positioned(

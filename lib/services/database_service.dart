@@ -10,7 +10,7 @@ class DatabaseService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseStorage _storage = FirebaseStorage.instance;
 
-  // Get single post stream
+  // Stream: Get a single post
   Stream<Post> getPost(String postId) {
     return _firestore
         .collection('posts')
@@ -19,7 +19,7 @@ class DatabaseService {
         .map((doc) => Post.fromMap(doc.data()!, doc.id));
   }
 
-  // Get all posts stream
+  // Stream: Get all posts
   Stream<List<Post>> getPosts() {
     return _firestore
         .collection('posts')
@@ -30,7 +30,7 @@ class DatabaseService {
             .toList());
   }
 
-  // Like post
+  // Like a post
   Future<void> likePost(String postId, int newLikeCount) async {
     try {
       await _firestore.collection('posts').doc(postId).update({
@@ -41,7 +41,7 @@ class DatabaseService {
     }
   }
 
-  // Share post
+  // Share a post
   Future<void> sharePost(String postId, int newShareCount) async {
     try {
       await _firestore.collection('posts').doc(postId).update({
@@ -52,10 +52,9 @@ class DatabaseService {
     }
   }
 
-  // Delete post
+  // Delete a post and its comments
   Future<void> deletePost(String postId) async {
     try {
-      // First, delete all comments
       final commentsSnapshot = await _firestore
           .collection('posts')
           .doc(postId)
@@ -66,14 +65,13 @@ class DatabaseService {
         await doc.reference.delete();
       }
 
-      // Then delete the post
       await _firestore.collection('posts').doc(postId).delete();
     } catch (e) {
       throw Exception('Failed to delete post: $e');
     }
   }
 
-  // Update post
+  // Update a post
   Future<void> updatePost(String postId, String newContent) async {
     try {
       await _firestore.collection('posts').doc(postId).update({
@@ -91,36 +89,33 @@ class DatabaseService {
       List<String> imageUrls = [];
 
       for (int i = 0; i < images.length; i++) {
-        final String fileName =
+        final fileName =
             'images/${DateTime.now().millisecondsSinceEpoch}_$i.jpg';
-        final Reference ref = _storage.ref().child(fileName);
+        final ref = _storage.ref().child(fileName);
 
         if (kIsWeb) {
-          // For web
           final bytes = await images[i].readAsBytes();
           await ref.putData(bytes);
         } else {
-          // For mobile
           final file = File(images[i].path);
           await ref.putFile(file);
         }
 
-        final String downloadUrl = await ref.getDownloadURL();
+        final downloadUrl = await ref.getDownloadURL();
         imageUrls.add(downloadUrl);
       }
 
-      return imageUrls.join(','); // Store as comma-separated string
+      return imageUrls.join(',');
     } catch (e) {
       throw Exception('Failed to upload images: $e');
     }
   }
 
-  // Upload single video
+  // Upload a single video
   Future<String> uploadVideo(XFile video) async {
     try {
-      final String fileName =
-          'videos/${DateTime.now().millisecondsSinceEpoch}.mp4';
-      final Reference ref = _storage.ref().child(fileName);
+      final fileName = 'videos/${DateTime.now().millisecondsSinceEpoch}.mp4';
+      final ref = _storage.ref().child(fileName);
 
       if (kIsWeb) {
         final bytes = await video.readAsBytes();
@@ -136,26 +131,20 @@ class DatabaseService {
     }
   }
 
-  // Upload document
+  // Upload a document
   Future<String> uploadDocument(PlatformFile document) async {
     try {
-      final String fileName =
+      final fileName =
           'documents/${DateTime.now().millisecondsSinceEpoch}_${document.name}';
-      final Reference ref = _storage.ref().child(fileName);
+      final ref = _storage.ref().child(fileName);
 
-      if (kIsWeb) {
-        if (document.bytes != null) {
-          await ref.putData(document.bytes!);
-        } else {
-          throw Exception('Document bytes are null');
-        }
+      if (kIsWeb && document.bytes != null) {
+        await ref.putData(document.bytes!);
+      } else if (document.path != null) {
+        final file = File(document.path!);
+        await ref.putFile(file);
       } else {
-        if (document.path != null) {
-          final file = File(document.path!);
-          await ref.putFile(file);
-        } else {
-          throw Exception('Document path is null');
-        }
+        throw Exception('Invalid document data');
       }
 
       return await ref.getDownloadURL();
@@ -164,7 +153,7 @@ class DatabaseService {
     }
   }
 
-  // Enhanced add comment method with media support
+  // Add a comment with optional media
   Future<void> addCommentWithMedia(
     String postId,
     String userId,
@@ -193,7 +182,6 @@ class DatabaseService {
           .collection('comments')
           .add(comment);
 
-      // Update comment count
       await _firestore.collection('posts').doc(postId).update({
         'comments': FieldValue.increment(1),
       });
@@ -202,7 +190,7 @@ class DatabaseService {
     }
   }
 
-  // Create post with media support
+  // Create a post with optional media
   Future<void> createPostWithMedia(
     String userId,
     String username,
@@ -211,6 +199,7 @@ class DatabaseService {
     String? videoUrl,
     String? documentUrl,
     String? documentName,
+    String? documentHash,
   }) async {
     try {
       final post = {
@@ -225,6 +214,7 @@ class DatabaseService {
         'videoUrl': videoUrl,
         'documentUrl': documentUrl,
         'documentName': documentName,
+        'documentHash': documentHash,
       };
 
       await _firestore.collection('posts').add(post);
@@ -233,34 +223,13 @@ class DatabaseService {
     }
   }
 
-  // Basic create post method (backward compatibility)
+  // Create a post (basic fallback)
   Future<void> createPost(
       String userId, String username, String content) async {
     await createPostWithMedia(userId, username, content);
   }
 
-  // Get user verification status (for blue badge)
-  Future<bool> isUserVerified(String userId) async {
-    try {
-      final doc = await _firestore.collection('users').doc(userId).get();
-      return doc.data()?['isVerified'] ?? true; // Default to true for all users
-    } catch (e) {
-      return true; // Default to verified
-    }
-  }
-
-  // Set user verification status
-  Future<void> setUserVerification(String userId, bool isVerified) async {
-    try {
-      await _firestore.collection('users').doc(userId).update({
-        'isVerified': isVerified,
-      });
-    } catch (e) {
-      throw Exception('Failed to update verification status: $e');
-    }
-  }
-
-  // Enhanced get comments method
+  // Stream: Get comments for a post
   Stream<List<Map<String, dynamic>>> getComments(String postId) {
     return _firestore
         .collection('posts')
@@ -276,7 +245,28 @@ class DatabaseService {
             .toList());
   }
 
-  // Delete comment
+  // Fetch comments once (no stream)
+  Future<List<Map<String, dynamic>>> getCommentsOnce(String postId) async {
+    try {
+      final snapshot = await _firestore
+          .collection('posts')
+          .doc(postId)
+          .collection('comments')
+          .orderBy('timestamp', descending: false)
+          .get();
+
+      return snapshot.docs
+          .map((doc) => {
+                'id': doc.id,
+                ...doc.data(),
+              })
+          .toList();
+    } catch (e) {
+      throw Exception('Failed to fetch comments: $e');
+    }
+  }
+
+  // Delete a comment
   Future<void> deleteComment(String postId, String commentId) async {
     try {
       await _firestore
@@ -286,7 +276,6 @@ class DatabaseService {
           .doc(commentId)
           .delete();
 
-      // Update comment count
       await _firestore.collection('posts').doc(postId).update({
         'comments': FieldValue.increment(-1),
       });
@@ -295,7 +284,7 @@ class DatabaseService {
     }
   }
 
-  // Get file download URL
+  // Get a file's download URL
   Future<String> getFileDownloadUrl(String filePath) async {
     try {
       final ref = _storage.ref().child(filePath);
@@ -305,7 +294,7 @@ class DatabaseService {
     }
   }
 
-  // Delete file from storage
+  // Delete a file from storage
   Future<void> deleteFile(String fileUrl) async {
     try {
       final ref = _storage.refFromURL(fileUrl);
@@ -315,13 +304,13 @@ class DatabaseService {
     }
   }
 
-  // Add comment (simple version for backward compatibility)
+  // Add a comment (simple fallback)
   Future<void> addComment(
       String postId, String userId, String username, String content) async {
     await addCommentWithMedia(postId, userId, username, content);
   }
 
-  // Get user posts
+  // Stream: Get posts for a specific user
   Stream<List<Post>> getUserPosts(String userId) {
     return _firestore
         .collection('posts')
@@ -333,19 +322,19 @@ class DatabaseService {
             .toList());
   }
 
-  // Search posts
+  // Stream: Search posts by content
   Stream<List<Post>> searchPosts(String query) {
     return _firestore
         .collection('posts')
         .where('content', isGreaterThanOrEqualTo: query)
-        .where('content', isLessThanOrEqualTo: query + '\uf8ff')
+        .where('content', isLessThanOrEqualTo: '$query\uf8ff')
         .snapshots()
         .map((snapshot) => snapshot.docs
             .map((doc) => Post.fromMap(doc.data(), doc.id))
             .toList());
   }
 
-  // Get trending posts (most liked)
+  // Stream: Get trending posts
   Stream<List<Post>> getTrendingPosts() {
     return _firestore
         .collection('posts')
@@ -357,7 +346,7 @@ class DatabaseService {
             .toList());
   }
 
-  // Create or update user profile
+  // Create a user profile
   Future<void> createUserProfile(
       String userId, String username, String email) async {
     try {
@@ -373,7 +362,7 @@ class DatabaseService {
     }
   }
 
-  // Get user profile
+  // Fetch a user profile
   Future<Map<String, dynamic>?> getUserProfile(String userId) async {
     try {
       final doc = await _firestore.collection('users').doc(userId).get();
@@ -383,7 +372,7 @@ class DatabaseService {
     }
   }
 
-  // Update user profile
+  // Update a user profile
   Future<void> updateUserProfile(
       String userId, Map<String, dynamic> updates) async {
     try {
@@ -391,6 +380,27 @@ class DatabaseService {
       await _firestore.collection('users').doc(userId).update(updates);
     } catch (e) {
       throw Exception('Failed to update user profile: $e');
+    }
+  }
+
+  // Get verification status of a user
+  Future<bool> isUserVerified(String userId) async {
+    try {
+      final doc = await _firestore.collection('users').doc(userId).get();
+      return doc.data()?['isVerified'] ?? true;
+    } catch (e) {
+      return true;
+    }
+  }
+
+  // Set verification status
+  Future<void> setUserVerification(String userId, bool isVerified) async {
+    try {
+      await _firestore.collection('users').doc(userId).update({
+        'isVerified': isVerified,
+      });
+    } catch (e) {
+      throw Exception('Failed to update verification status: $e');
     }
   }
 }
