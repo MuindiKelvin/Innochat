@@ -144,7 +144,7 @@ class _PostCardState extends State<PostCard> {
 
     if (imageUrls.isEmpty) return const SizedBox.shrink();
 
-    return Container(
+    return SizedBox(
       height: _mediaHeight,
       width: double.infinity,
       child: imageUrls.length == 1
@@ -156,7 +156,7 @@ class _PostCardState extends State<PostCard> {
   Widget _buildSingleImage(String imageUrl) {
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
-      child: Container(
+      child: SizedBox(
         height: _mediaHeight,
         width: double.infinity,
         child: CachedNetworkImage(
@@ -199,7 +199,7 @@ class _PostCardState extends State<PostCard> {
           final isLastItem = index == 3 && imageUrls.length > 4;
           return Stack(
             children: [
-              Container(
+              SizedBox(
                 width: double.infinity,
                 height: double.infinity,
                 child: ClipRRect(
@@ -245,7 +245,7 @@ class _PostCardState extends State<PostCard> {
   }
 
   Widget _buildVideoPlayer() {
-    return Container(
+    return SizedBox(
       height: _mediaHeight,
       width: double.infinity,
       child: ClipRRect(

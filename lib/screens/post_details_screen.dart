@@ -1,4 +1,5 @@
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:innochat/models/post.dart';
 import 'package:innochat/services/database_service.dart';
@@ -19,6 +20,8 @@ import 'package:webview_flutter/webview_flutter.dart';
 import 'package:dio/dio.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
+import 'package:video_player/video_player.dart';
+import 'package:flutter_spinkit/flutter_spinkit.dart';
 
 class PostDetailsScreen extends StatefulWidget {
   final Post post;
@@ -28,7 +31,8 @@ class PostDetailsScreen extends StatefulWidget {
   _PostDetailsScreenState createState() => _PostDetailsScreenState();
 }
 
-class _PostDetailsScreenState extends State<PostDetailsScreen> {
+class _PostDetailsScreenState extends State<PostDetailsScreen>
+    with TickerProviderStateMixin {
   final _databaseService = DatabaseService();
   final user = FirebaseAuth.instance.currentUser!;
   bool _isEmojiVisible = false;
@@ -38,20 +42,62 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
   final ImagePicker _imagePicker = ImagePicker();
   final Set<String> _uploadedFileHashes = {}; // Track uploaded file hashes
 
+  // Animation controllers
+  late AnimationController _likeAnimationController;
+  late AnimationController _shareAnimationController;
+  late Animation<double> _likeAnimation;
+  late Animation<double> _shareAnimation;
+
   List<XFile> _selectedImages = [];
   XFile? _selectedVideo;
   PlatformFile? _selectedDocument;
+  VideoPlayerController? _previewVideoController;
+
+  bool _isCommenting = false;
+  bool _isLoadingComments = false;
 
   @override
   void initState() {
     super.initState();
     _checkIfLiked();
     _loadUploadedFileHashes();
+    _initAnimations();
+  }
+
+  void _initAnimations() {
+    _likeAnimationController = AnimationController(
+      duration: const Duration(milliseconds: 600),
+      vsync: this,
+    );
+
+    _shareAnimationController = AnimationController(
+      duration: const Duration(milliseconds: 400),
+      vsync: this,
+    );
+
+    _likeAnimation = Tween<double>(
+      begin: 1.0,
+      end: 1.2,
+    ).animate(CurvedAnimation(
+      parent: _likeAnimationController,
+      curve: Curves.elasticOut,
+    ));
+
+    _shareAnimation = Tween<double>(
+      begin: 1.0,
+      end: 1.1,
+    ).animate(CurvedAnimation(
+      parent: _shareAnimationController,
+      curve: Curves.bounceOut,
+    ));
   }
 
   @override
   void dispose() {
     _commentController.dispose();
+    _previewVideoController?.dispose();
+    _likeAnimationController.dispose();
+    _shareAnimationController.dispose();
     super.dispose();
   }
 
@@ -64,7 +110,7 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
   // Load previously uploaded file hashes to prevent duplicates
   Future<void> _loadUploadedFileHashes() async {
     try {
-      final comments = await _databaseService.getComments(widget.post.id).first;
+      final comments = await _databaseService.getCommentsOnce(widget.post.id);
       for (var comment in comments) {
         if (comment['documentHash'] != null) {
           _uploadedFileHashes.add(comment['documentHash']);
@@ -82,6 +128,13 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
   }
 
   Future<void> _toggleLike() async {
+    // Trigger animation
+    if (_isLiked) {
+      _likeAnimationController.reverse();
+    } else {
+      _likeAnimationController.forward();
+    }
+
     setState(() {
       _isLiked = !_isLiked;
       if (_isLiked) {
@@ -91,75 +144,244 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
       }
     });
 
-    int newLikeCount = _isLiked ? widget.post.likes + 1 : widget.post.likes - 1;
-    await _databaseService.likePost(widget.post.id, newLikeCount);
-  }
+    // Add haptic feedback
+    if (!kIsWeb) {
+      // HapticFeedback.lightImpact();
+    }
 
-  Future<void> _sharePost() async {
-    await _databaseService.sharePost(widget.post.id, widget.post.shares + 1);
-    Share.share(widget.post.content);
-  }
+    try {
+      int newLikeCount =
+          _isLiked ? widget.post.likes + 1 : widget.post.likes - 1;
+      await _databaseService.likePost(widget.post.id, newLikeCount);
 
-  Future<void> _pickImages() async {
-    final List<XFile> images = await _imagePicker.pickMultiImage();
-    setState(() {
-      _selectedImages = images;
-    });
-  }
-
-  Future<void> _pickVideo() async {
-    final XFile? video =
-        await _imagePicker.pickVideo(source: ImageSource.gallery);
-    setState(() {
-      _selectedVideo = video;
-    });
-  }
-
-  Future<void> _pickDocument() async {
-    FilePickerResult? result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: [
-        'pdf',
-        'doc',
-        'docx',
-        'txt',
-        'xlsx',
-        'pptx',
-        'xls',
-        'ppt'
-      ],
-    );
-
-    if (result != null) {
-      final file = result.files.first;
-      final bytes = file.bytes ?? await File(file.path!).readAsBytes();
-      final fileHash = await _generateFileHash(bytes);
-
-      // Check if file already uploaded
-      if (_uploadedFileHashes.contains(fileHash)) {
+      // Show success message
+      if (_isLiked) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
-              'This document has already been uploaded',
-              style: GoogleFonts.poppins(),
+            content: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.thumb_up, color: Colors.white, size: 16),
+                const SizedBox(width: 8),
+                Text('Liked!', style: GoogleFonts.poppins()),
+              ],
             ),
-            backgroundColor: Colors.orange,
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 1),
+            behavior: SnackBarBehavior.floating,
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           ),
         );
-        return;
       }
-
+    } catch (e) {
+      // Revert on error
       setState(() {
-        _selectedDocument = file;
+        _isLiked = !_isLiked;
+        if (_isLiked) {
+          _likedPosts.add(widget.post.id);
+        } else {
+          _likedPosts.remove(widget.post.id);
+        }
       });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content:
+              Text('Error updating like: $e', style: GoogleFonts.poppins()),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
   }
 
-  // Enhanced document viewer - handles all document types within the app
-  Future<void> _openDocument(
-      String url, String fileName, String? documentHash) async {
+  Future<void> _sharePost() async {
+    _shareAnimationController.forward().then((_) {
+      _shareAnimationController.reverse();
+    });
+
     try {
-      // Show loading dialog
+      await _databaseService.sharePost(widget.post.id, widget.post.shares + 1);
+
+      // Generate a deep link and fallback web URL for the post
+      final deepLink = 'innochat://post/${widget.post.id}';
+      final fallbackUrl = 'https://yourapp.com/post/${widget.post.id}';
+      final shareText =
+          '${widget.post.content}\n\nView post: $deepLink\nOr visit: $fallbackUrl';
+
+      Share.share(shareText, subject: 'Check out this post on InnoChat!');
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.share, color: Colors.white, size: 16),
+              const SizedBox(width: 8),
+              Text('Post shared!', style: GoogleFonts.poppins()),
+            ],
+          ),
+          backgroundColor: Colors.blue,
+          duration: const Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error sharing post: $e', style: GoogleFonts.poppins()),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<void> _pickImages() async {
+    try {
+      final List<XFile> images = await _imagePicker.pickMultiImage();
+      if (images.isNotEmpty) {
+        setState(() {
+          _selectedImages = images;
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${images.length} image(s) selected',
+                style: GoogleFonts.poppins()),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 1),
+          ),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content:
+              Text('Error selecting images: $e', style: GoogleFonts.poppins()),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<void> _pickVideo() async {
+    try {
+      final XFile? video =
+          await _imagePicker.pickVideo(source: ImageSource.gallery);
+      if (video != null) {
+        setState(() {
+          _selectedVideo = video;
+        });
+
+        // Initialize video controller for preview
+        _previewVideoController?.dispose();
+        if (!kIsWeb) {
+          _previewVideoController = VideoPlayerController.file(File(video.path))
+            ..initialize().then((_) {
+              setState(() {});
+            });
+        }
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Video selected', style: GoogleFonts.poppins()),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 1),
+          ),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content:
+              Text('Error selecting video: $e', style: GoogleFonts.poppins()),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<void> _pickDocument() async {
+    try {
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: [
+          'pdf',
+          'doc',
+          'docx',
+          'txt',
+          'xlsx',
+          'pptx',
+          'xls',
+          'ppt'
+        ],
+      );
+
+      if (result != null) {
+        final file = result.files.first;
+
+        // Check file size (limit to 10MB)
+        final fileSize = file.size;
+        if (fileSize > 10 * 1024 * 1024) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'File too large. Maximum size is 10MB.',
+                style: GoogleFonts.poppins(),
+              ),
+              backgroundColor: Colors.orange,
+            ),
+          );
+          return;
+        }
+
+        final bytes = file.bytes ?? await File(file.path!).readAsBytes();
+        final fileHash = await _generateFileHash(bytes);
+
+        // Check if file already uploaded
+        if (_uploadedFileHashes.contains(fileHash)) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'This document has already been uploaded',
+                style: GoogleFonts.poppins(),
+              ),
+              backgroundColor: Colors.orange,
+            ),
+          );
+          return;
+        }
+
+        setState(() {
+          _selectedDocument = file;
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Document selected: ${file.name}',
+                style: GoogleFonts.poppins()),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error selecting document: $e',
+              style: GoogleFonts.poppins()),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  // Enhanced document opening with in-app viewer
+  Future<void> _openDocument(String documentUrl, String documentName) async {
+    try {
+      // Show loading indicator
       showDialog(
         context: context,
         barrierDismissible: false,
@@ -167,115 +389,124 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const CircularProgressIndicator(),
+              const SpinKitFadingCircle(color: Colors.deepPurple),
               const SizedBox(height: 16),
-              Text('Loading document...', style: GoogleFonts.poppins()),
+              Text('Opening document...', style: GoogleFonts.poppins()),
             ],
           ),
         ),
       );
 
-      final extension = fileName.split('.').last.toLowerCase();
+      // Check if it's a PDF document
+      if (documentName.toLowerCase().endsWith('.pdf')) {
+        // Download and cache the PDF
+        final response = await http.get(Uri.parse(documentUrl));
+        if (response.statusCode == 200) {
+          final bytes = response.bodyBytes;
+          final dir = await getTemporaryDirectory();
+          final file = File('${dir.path}/$documentName');
+          await file.writeAsBytes(bytes);
 
-      if (extension == 'pdf') {
-        Navigator.pop(context); // Close loading dialog
-        await _openPDFViewer(url, fileName);
-      } else if (['txt'].contains(extension)) {
-        Navigator.pop(context); // Close loading dialog
-        await _openTextDocument(url, fileName);
+          // Close loading dialog
+          Navigator.pop(context);
+
+          // Open PDF viewer
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => PDFViewerScreen(
+                filePath: file.path,
+                title: documentName,
+              ),
+            ),
+          );
+        } else {
+          Navigator.pop(context);
+          throw Exception('Failed to download PDF');
+        }
+      } else if (documentName.toLowerCase().endsWith('.txt')) {
+        // Handle text files
+        final response = await http.get(Uri.parse(documentUrl));
+        if (response.statusCode == 200) {
+          final content = response.body;
+          Navigator.pop(context);
+
+          // Show text content in a dialog
+          showDialog(
+            context: context,
+            builder: (context) => TextDocumentViewer(
+              content: content,
+              title: documentName,
+            ),
+          );
+        } else {
+          Navigator.pop(context);
+          throw Exception('Failed to load text file');
+        }
       } else if (['doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx']
-          .contains(extension)) {
-        Navigator.pop(context); // Close loading dialog
-        await _openOfficeDocument(url, fileName);
+          .contains(documentName.toLowerCase().split('.').last)) {
+        // Handle Office documents with web viewer
+        Navigator.pop(context);
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => EnhancedOfficeDocumentViewer(
+              url: documentUrl,
+              fileName: documentName,
+            ),
+          ),
+        );
       } else {
-        Navigator.pop(context); // Close loading dialog
-        // For unsupported formats, show content as text
-        await _openGenericDocument(url, fileName);
+        // For other document types, fall back to external launch
+        Navigator.pop(context);
+        final url = Uri.parse(documentUrl);
+        final isLaunching = await canLaunchUrl(url);
+        if (isLaunching) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content:
+                  Text('Opening document...', style: GoogleFonts.poppins()),
+              duration: const Duration(seconds: 2),
+            ),
+          );
+          await launchUrl(url, mode: LaunchMode.externalApplication);
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Cannot open document: Invalid URL',
+                  style: GoogleFonts.poppins()),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
       }
     } catch (e) {
-      Navigator.pop(context); // Close loading dialog if still open
+      // Close loading dialog if still open
+      if (Navigator.canPop(context)) {
+        Navigator.pop(context);
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            'Error opening document: $e',
-            style: GoogleFonts.poppins(),
-          ),
+          content:
+              Text('Error opening document: $e', style: GoogleFonts.poppins()),
           backgroundColor: Colors.red,
         ),
       );
     }
   }
 
-  Future<void> _openPDFViewer(String url, String fileName) async {
-    try {
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) =>
-              EnhancedPDFViewerScreen(url: url, fileName: fileName),
-        ),
-      );
-    } catch (e) {
-      // Fallback to web viewer
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => WebDocumentViewer(url: url, fileName: fileName),
-        ),
-      );
-    }
-  }
-
-  Future<void> _openOfficeDocument(String url, String fileName) async {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) =>
-            EnhancedOfficeDocumentViewer(url: url, fileName: fileName),
-      ),
-    );
-  }
-
-  Future<void> _openTextDocument(String url, String fileName) async {
-    try {
-      final response = await http.get(Uri.parse(url));
-      String content;
-
-      if (response.statusCode == 200) {
-        content = utf8.decode(response.bodyBytes);
-      } else {
-        content = 'Error loading document content';
-      }
-
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => TextDocumentViewer(
-            content: content,
-            fileName: fileName,
-          ),
-        ),
-      );
-    } catch (e) {
-      throw 'Error loading text document: $e';
-    }
-  }
-
-  Future<void> _openGenericDocument(String url, String fileName) async {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) =>
-            GenericDocumentViewer(url: url, fileName: fileName),
-      ),
-    );
-  }
-
   Future<void> _deletePost() async {
     final shouldDelete = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('Delete Post', style: GoogleFonts.poppins()),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            const Icon(Icons.delete_forever, color: Colors.red),
+            const SizedBox(width: 8),
+            Text('Delete Post', style: GoogleFonts.poppins()),
+          ],
+        ),
         content: Text(
             'Are you sure you want to delete this post? This action cannot be undone.',
             style: GoogleFonts.poppins()),
@@ -284,9 +515,12 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
             onPressed: () => Navigator.pop(context, false),
             child: Text('Cancel', style: GoogleFonts.poppins()),
           ),
-          TextButton(
+          ElevatedButton(
             onPressed: () => Navigator.pop(context, true),
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
             child: Text('Delete', style: GoogleFonts.poppins()),
           ),
         ],
@@ -295,16 +529,47 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
 
     if (shouldDelete == true) {
       try {
+        // Show loading
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => AlertDialog(
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const CircularProgressIndicator(),
+                const SizedBox(height: 16),
+                Text('Deleting post...', style: GoogleFonts.poppins()),
+              ],
+            ),
+          ),
+        );
+
         await _databaseService.deletePost(widget.post.id);
+
+        // Close loading dialog
         Navigator.pop(context);
+        // Close post details screen
+        Navigator.pop(context);
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content:
+            content: Row(
+              children: [
+                const Icon(Icons.check, color: Colors.white),
+                const SizedBox(width: 8),
                 Text('Post deleted successfully', style: GoogleFonts.poppins()),
+              ],
+            ),
             backgroundColor: Colors.green,
           ),
         );
       } catch (e) {
+        // Close loading dialog if open
+        if (Navigator.canPop(context)) {
+          Navigator.pop(context);
+        }
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content:
@@ -322,26 +587,45 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
     final updatedContent = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('Update Post', style: GoogleFonts.poppins()),
-        content: TextField(
-          controller: controller,
-          maxLines: 5,
-          decoration: InputDecoration(
-            hintText: 'Edit your post',
-            hintStyle: GoogleFonts.poppins(),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            const Icon(Icons.edit, color: Colors.blue),
+            const SizedBox(width: 8),
+            Text('Update Post', style: GoogleFonts.poppins()),
+          ],
+        ),
+        content: SizedBox(
+          width: MediaQuery.of(context).size.width * 0.8,
+          child: TextField(
+            controller: controller,
+            maxLines: 5,
+            decoration: InputDecoration(
+              hintText: 'Edit your post',
+              hintStyle: GoogleFonts.poppins(color: Colors.grey),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide:
+                    const BorderSide(color: Colors.deepPurple, width: 2),
+              ),
             ),
+            style: GoogleFonts.poppins(),
           ),
-          style: GoogleFonts.poppins(),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: Text('Cancel', style: GoogleFonts.poppins()),
           ),
-          TextButton(
+          ElevatedButton(
             onPressed: () => Navigator.pop(context, controller.text),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.deepPurple,
+              foregroundColor: Colors.white,
+            ),
             child: Text('Save', style: GoogleFonts.poppins()),
           ),
         ],
@@ -355,8 +639,13 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
         await _databaseService.updatePost(widget.post.id, updatedContent);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content:
+            content: Row(
+              children: [
+                const Icon(Icons.check, color: Colors.white),
+                const SizedBox(width: 8),
                 Text('Post updated successfully', style: GoogleFonts.poppins()),
+              ],
+            ),
             backgroundColor: Colors.green,
           ),
         );
@@ -391,8 +680,19 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
         _selectedImages.isEmpty &&
         _selectedVideo == null &&
         _selectedDocument == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Please add some content to comment',
+              style: GoogleFonts.poppins()),
+          backgroundColor: Colors.orange,
+        ),
+      );
       return;
     }
+
+    setState(() {
+      _isCommenting = true;
+    });
 
     try {
       // Upload media files if any
@@ -400,6 +700,7 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
       String? videoUrl;
       String? documentUrl;
       String? documentHash;
+      String? documentName;
 
       if (_selectedImages.isNotEmpty) {
         imageUrl = await _databaseService.uploadImages(_selectedImages);
@@ -414,10 +715,11 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
             await File(_selectedDocument!.path!).readAsBytes();
         documentHash = await _generateFileHash(bytes);
         documentUrl = await _databaseService.uploadDocument(_selectedDocument!);
+        documentName = _selectedDocument!.name;
         _uploadedFileHashes.add(documentHash); // Add to local cache
       }
 
-      // Call addCommentWithMedia without documentHash parameter
+      // Call addCommentWithMedia with document information
       await _databaseService.addCommentWithMedia(
         widget.post.id,
         user.uid,
@@ -426,6 +728,7 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
         imageUrl: imageUrl,
         videoUrl: videoUrl,
         documentUrl: documentUrl,
+        documentName: documentName,
       );
 
       // Clear the input
@@ -434,17 +737,30 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
         _selectedImages.clear();
         _selectedVideo = null;
         _selectedDocument = null;
+        _previewVideoController?.dispose();
+        _previewVideoController = null;
         _isEmojiVisible = false;
+        _isCommenting = false;
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content:
+          content: Row(
+            children: [
+              const Icon(Icons.check, color: Colors.white),
+              const SizedBox(width: 8),
               Text('Comment added successfully', style: GoogleFonts.poppins()),
+            ],
+          ),
           backgroundColor: Colors.green,
+          behavior: SnackBarBehavior.floating,
         ),
       );
     } catch (e) {
+      setState(() {
+        _isCommenting = false;
+      });
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content:
@@ -455,7 +771,7 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
     }
   }
 
-  Widget _buildUserBadge(String username) {
+  Widget _buildUserBadge(String username, {bool isVerified = true}) {
     return Row(
       children: [
         Text(
@@ -466,17 +782,18 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
           ),
         ),
         const SizedBox(width: 4),
-        Container(
-          decoration: const BoxDecoration(
-            color: Colors.blue,
-            shape: BoxShape.circle,
+        if (isVerified)
+          Container(
+            decoration: const BoxDecoration(
+              color: Colors.blue,
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.check,
+              color: Colors.white,
+              size: 12,
+            ),
           ),
-          child: const Icon(
-            Icons.check,
-            color: Colors.white,
-            size: 12,
-          ),
-        ),
       ],
     );
   }
@@ -492,15 +809,27 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.grey[100],
+        color: Colors.grey[50],
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: Colors.grey[300]!),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Row(
+            children: [
+              const Icon(Icons.attach_file, color: Colors.deepPurple, size: 16),
+              const SizedBox(width: 4),
+              Text('Attachments',
+                  style: GoogleFonts.poppins(
+                    fontWeight: FontWeight.w600,
+                    color: Colors.deepPurple,
+                  )),
+            ],
+          ),
+          const SizedBox(height: 12),
           if (_selectedImages.isNotEmpty) ...[
-            Text('Selected Images:',
+            Text('Images (${_selectedImages.length}):',
                 style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
             const SizedBox(height: 8),
             SizedBox(
@@ -546,60 +875,127 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
                 },
               ),
             ),
+            const SizedBox(height: 12),
           ],
           if (_selectedVideo != null) ...[
-            Text('Selected Video:',
+            Text('Video:',
                 style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
             const SizedBox(height: 8),
             Container(
-              padding: const EdgeInsets.all(8),
+              height: 120,
               decoration: BoxDecoration(
-                color: Colors.blue[50],
+                color: Colors.black,
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: Row(
+              child: Stack(
+                alignment: Alignment.center,
                 children: [
-                  const Icon(Icons.video_file, color: Colors.blue),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      _selectedVideo!.name,
-                      style: GoogleFonts.poppins(),
-                      overflow: TextOverflow.ellipsis,
+                  if (_previewVideoController != null &&
+                      _previewVideoController!.value.isInitialized)
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: AspectRatio(
+                        aspectRatio: _previewVideoController!.value.aspectRatio,
+                        child: VideoPlayer(_previewVideoController!),
+                      ),
+                    )
+                  else
+                    const SpinKitFadingCircle(color: Colors.white),
+
+                  // Video controls
+                  if (_previewVideoController != null &&
+                      _previewVideoController!.value.isInitialized) ...[
+                    GestureDetector(
+                      onTap: () {
+                        if (_previewVideoController!.value.isPlaying) {
+                          _previewVideoController!.pause();
+                        } else {
+                          _previewVideoController!.play();
+                        }
+                        setState(() {});
+                      },
+                      child: Container(
+                        color: Colors.transparent,
+                        width: double.infinity,
+                        height: double.infinity,
+                      ),
                     ),
-                  ),
-                  IconButton(
-                    onPressed: () {
-                      setState(() {
-                        _selectedVideo = null;
-                      });
-                    },
-                    icon: const Icon(Icons.close, color: Colors.red),
+                    if (!_previewVideoController!.value.isPlaying)
+                      Container(
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.6),
+                          shape: BoxShape.circle,
+                        ),
+                        child: IconButton(
+                          icon: const Icon(Icons.play_arrow,
+                              color: Colors.white, size: 32),
+                          onPressed: () {
+                            _previewVideoController!.play();
+                            setState(() {});
+                          },
+                        ),
+                      ),
+                  ],
+
+                  // Remove button
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: GestureDetector(
+                      onTap: () {
+                        setState(() {
+                          _selectedVideo = null;
+                          _previewVideoController?.dispose();
+                          _previewVideoController = null;
+                        });
+                      },
+                      child: Container(
+                        decoration: const BoxDecoration(
+                          color: Colors.red,
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.close,
+                            color: Colors.white, size: 20),
+                      ),
+                    ),
                   ),
                 ],
               ),
             ),
+            const SizedBox(height: 12),
           ],
           if (_selectedDocument != null) ...[
-            Text('Selected Document:',
+            Text('Document:',
                 style: GoogleFonts.poppins(fontWeight: FontWeight.w600)),
             const SizedBox(height: 8),
             Container(
-              padding: const EdgeInsets.all(8),
+              padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: Colors.green[50],
                 borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.green[200]!),
               ),
               child: Row(
                 children: [
                   Icon(_getDocumentIcon(_selectedDocument!.extension),
-                      color: Colors.green),
+                      color: _getDocumentColor(_selectedDocument!.name)),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: Text(
-                      _selectedDocument!.name,
-                      style: GoogleFonts.poppins(),
-                      overflow: TextOverflow.ellipsis,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _selectedDocument!.name,
+                          style:
+                              GoogleFonts.poppins(fontWeight: FontWeight.w500),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        Text(
+                          _formatFileSize(_selectedDocument!.size),
+                          style: GoogleFonts.poppins(
+                              fontSize: 12, color: Colors.grey[600]),
+                        ),
+                      ],
                     ),
                   ),
                   IconButton(
@@ -619,6 +1015,13 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
     );
   }
 
+  String _formatFileSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+
+  // Helper methods for document icons and colors
   IconData _getDocumentIcon(String? extension) {
     switch (extension?.toLowerCase()) {
       case 'pdf':
@@ -639,6 +1042,27 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
     }
   }
 
+  Color _getDocumentColor(String fileName) {
+    final extension = fileName.toLowerCase().split('.').last;
+    switch (extension) {
+      case 'pdf':
+        return Colors.red;
+      case 'doc':
+      case 'docx':
+        return Colors.blue;
+      case 'txt':
+        return Colors.grey;
+      case 'xls':
+      case 'xlsx':
+        return Colors.green;
+      case 'ppt':
+      case 'pptx':
+        return Colors.orange;
+      default:
+        return Colors.deepPurple;
+    }
+  }
+
   Widget _buildCommentMedia(Map<String, dynamic> comment) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -654,31 +1078,75 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
               placeholder: (context, url) => Container(
                 height: 200,
                 color: Colors.grey[300],
-                child: const Center(child: CircularProgressIndicator()),
+                child: const Center(
+                  child: SpinKitFadingCircle(color: Colors.deepPurple),
+                ),
               ),
               errorWidget: (context, url, error) => Container(
                 height: 200,
                 color: Colors.grey[300],
-                child: const Center(child: Icon(Icons.error)),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.error, color: Colors.red),
+                    Text('Failed to load image', style: GoogleFonts.poppins()),
+                  ],
+                ),
               ),
             ),
           ),
         ],
         if (comment['videoUrl'] != null) ...[
           const SizedBox(height: 8),
-          Container(
-            height: 200,
-            decoration: BoxDecoration(
-              color: Colors.black,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Center(
-              child: IconButton(
-                onPressed: () {
-                  // Implement video player
-                },
-                icon:
-                    const Icon(Icons.play_arrow, color: Colors.white, size: 50),
+          GestureDetector(
+            onTap: () {
+              // Navigate to full-screen video player
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => VideoPlayerScreen(
+                    videoUrl: comment['videoUrl'],
+                  ),
+                ),
+              );
+            },
+            child: Container(
+              height: 200,
+              decoration: BoxDecoration(
+                color: Colors.black,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.7),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.play_arrow,
+                        color: Colors.white, size: 50),
+                  ),
+                  Positioned(
+                    bottom: 8,
+                    right: 8,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.7),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        'Tap to play',
+                        style: GoogleFonts.poppins(
+                          color: Colors.white,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -689,8 +1157,7 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
             onTap: () async {
               final url = comment['documentUrl'];
               final fileName = comment['documentName'] ?? 'Document';
-              final documentHash = comment['documentHash'];
-              await _openDocument(url, fileName, documentHash);
+              await _openDocument(url, fileName);
             },
             child: Container(
               padding: const EdgeInsets.all(12),
@@ -703,9 +1170,10 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
                 children: [
                   Icon(
                     _getDocumentIcon(comment['documentName']?.split('.').last),
-                    color: Colors.blue,
+                    color: _getDocumentColor(
+                        comment['documentName'] ?? 'Document'),
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 12),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -714,6 +1182,7 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
                           comment['documentName'] ?? 'Document',
                           style:
                               GoogleFonts.poppins(fontWeight: FontWeight.w600),
+                          overflow: TextOverflow.ellipsis,
                         ),
                         Text(
                           'Tap to open in app',
@@ -733,6 +1202,140 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
     );
   }
 
+  Widget _buildEnhancedActionButtons(Post post) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.grey.withOpacity(0.1),
+            spreadRadius: 1,
+            blurRadius: 3,
+            offset: const Offset(0, 1),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          // Like Button
+          Expanded(
+            child: AnimatedBuilder(
+              animation: _likeAnimation,
+              builder: (context, child) {
+                return Transform.scale(
+                  scale: _likeAnimation.value,
+                  child: ElevatedButton.icon(
+                    onPressed: _toggleLike,
+                    icon: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 300),
+                      child: Icon(
+                        _isLiked ? Icons.thumb_up : Icons.thumb_up_outlined,
+                        key: ValueKey(_isLiked),
+                        color: _isLiked ? Colors.white : Colors.deepPurple,
+                        size: 20,
+                      ),
+                    ),
+                    label: Text(
+                      '${post.likes}',
+                      style: GoogleFonts.poppins(
+                        color: _isLiked ? Colors.white : Colors.deepPurple,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor:
+                          _isLiked ? Colors.deepPurple : Colors.white,
+                      foregroundColor:
+                          _isLiked ? Colors.white : Colors.deepPurple,
+                      side: BorderSide(
+                        color: Colors.deepPurple,
+                        width: _isLiked ? 0 : 1,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(25),
+                      ),
+                      elevation: _isLiked ? 2 : 0,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 12),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+
+          const SizedBox(width: 12),
+
+          // Comments Button
+          Expanded(
+            child: ElevatedButton.icon(
+              onPressed: () {
+                // Scroll to comments section
+                // You can implement auto-scroll here
+              },
+              icon: const Icon(Icons.comment_outlined,
+                  color: Colors.orange, size: 20),
+              label: Text(
+                '${post.comments}',
+                style: GoogleFonts.poppins(
+                  color: Colors.orange,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.white,
+                foregroundColor: Colors.orange,
+                side: const BorderSide(color: Colors.orange),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(25),
+                ),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              ),
+            ),
+          ),
+
+          const SizedBox(width: 12),
+
+          // Share Button
+          Expanded(
+            child: AnimatedBuilder(
+              animation: _shareAnimation,
+              builder: (context, child) {
+                return Transform.scale(
+                  scale: _shareAnimation.value,
+                  child: ElevatedButton.icon(
+                    onPressed: _sharePost,
+                    icon: const Icon(Icons.share_outlined,
+                        color: Colors.green, size: 20),
+                    label: Text(
+                      '${post.shares}',
+                      style: GoogleFonts.poppins(
+                        color: Colors.green,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      foregroundColor: Colors.green,
+                      side: const BorderSide(color: Colors.green),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(25),
+                      ),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 12),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -740,9 +1343,11 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
         title: Text('Post Details', style: GoogleFonts.poppins()),
         backgroundColor: Colors.deepPurple,
         foregroundColor: Colors.white,
+        elevation: 0,
         actions: widget.post.userId == user.uid
             ? [
                 PopupMenuButton<String>(
+                  icon: const Icon(Icons.more_vert),
                   onSelected: (value) {
                     if (value == 'delete') _deletePost();
                     if (value == 'update') _updatePost();
@@ -777,9 +1382,23 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
         stream: _databaseService.getPost(widget.post.id),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
+            return const Center(
+              child: SpinKitFadingCircle(color: Colors.deepPurple),
+            );
           }
-          if (!snapshot.hasData) return const SizedBox.shrink();
+          if (!snapshot.hasData) {
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.error, size: 64, color: Colors.red),
+                  const SizedBox(height: 16),
+                  Text('Post not found', style: GoogleFonts.poppins()),
+                ],
+              ),
+            );
+          }
+
           final post = snapshot.data!;
 
           return Column(
@@ -788,94 +1407,52 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
                 child: SingleChildScrollView(
                   child: Column(
                     children: [
+                      // Post Content
                       PostCard(post: post, onTap: () {}),
 
                       // Enhanced Action Buttons
-                      Padding(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 16.0, vertical: 8.0),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceAround,
-                          children: [
-                            // Like Button with animation
-                            AnimatedContainer(
-                              duration: const Duration(milliseconds: 200),
-                              child: ElevatedButton.icon(
-                                onPressed: _toggleLike,
-                                icon: AnimatedSwitcher(
-                                  duration: const Duration(milliseconds: 200),
-                                  child: Icon(
-                                    _isLiked
-                                        ? Icons.thumb_up
-                                        : Icons.thumb_up_outlined,
-                                    key: ValueKey(_isLiked),
-                                    color: _isLiked
-                                        ? Colors.white
-                                        : Colors.deepPurple,
-                                  ),
-                                ),
-                                label: Text(
-                                  '${post.likes} Likes',
-                                  style: GoogleFonts.poppins(
-                                    color: _isLiked
-                                        ? Colors.white
-                                        : Colors.deepPurple,
-                                  ),
-                                ),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: _isLiked
-                                      ? Colors.deepPurple
-                                      : Colors.white,
-                                  foregroundColor: _isLiked
-                                      ? Colors.white
-                                      : Colors.deepPurple,
-                                  side: const BorderSide(
-                                      color: Colors.deepPurple),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(20),
-                                  ),
-                                ),
-                              ),
-                            ),
+                      _buildEnhancedActionButtons(post),
 
-                            // Share Button
-                            ElevatedButton.icon(
-                              onPressed: _sharePost,
-                              icon: const Icon(Icons.share,
-                                  color: Colors.deepPurple),
-                              label: Text(
-                                '${post.shares} Shares',
-                                style: GoogleFonts.poppins(
-                                    color: Colors.deepPurple),
-                              ),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.white,
-                                foregroundColor: Colors.deepPurple,
-                                side:
-                                    const BorderSide(color: Colors.deepPurple),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(20),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-
+                      const SizedBox(height: 8),
                       Divider(color: Colors.grey[300], thickness: 1),
 
                       // Comments Section Header
-                      Padding(
+                      Container(
                         padding: const EdgeInsets.all(16.0),
                         child: Row(
                           children: [
-                            const Icon(Icons.comment, color: Colors.deepPurple),
-                            const SizedBox(width: 8),
-                            Text(
-                              'Comments',
-                              style: GoogleFonts.poppins(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 18,
+                            Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: Colors.deepPurple.withOpacity(0.1),
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(
+                                Icons.comment,
+                                color: Colors.deepPurple,
+                                size: 20,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Comments',
+                                    style: GoogleFonts.poppins(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 18,
+                                    ),
+                                  ),
+                                  Text(
+                                    'Join the conversation',
+                                    style: GoogleFonts.poppins(
+                                      fontSize: 12,
+                                      color: Colors.grey[600],
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           ],
@@ -888,95 +1465,159 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
                         builder: (context, snapshot) {
                           if (snapshot.connectionState ==
                               ConnectionState.waiting) {
-                            return const Center(
-                                child: CircularProgressIndicator());
-                          }
-                          if (!snapshot.hasData || snapshot.data!.isEmpty) {
-                            return Padding(
-                              padding: const EdgeInsets.all(16.0),
-                              child: Center(
-                                child: Column(
-                                  children: [
-                                    Icon(Icons.comment_outlined,
-                                        size: 48, color: Colors.grey[400]),
-                                    const SizedBox(height: 8),
-                                    Text(
-                                      'No comments yet!',
-                                      style: GoogleFonts.poppins(
-                                        color: Colors.grey[600],
-                                        fontSize: 16,
-                                      ),
-                                    ),
-                                    Text(
-                                      'Be the first to comment',
-                                      style: GoogleFonts.poppins(
-                                        color: Colors.grey[500],
-                                        fontSize: 14,
-                                      ),
-                                    ),
-                                  ],
-                                ),
+                            return Container(
+                              padding: const EdgeInsets.all(32),
+                              child: const SpinKitFadingCircle(
+                                color: Colors.deepPurple,
                               ),
                             );
                           }
-                          return ListView.builder(
+
+                          if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                            return Container(
+                              padding: const EdgeInsets.all(32),
+                              child: Column(
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.all(24),
+                                    decoration: BoxDecoration(
+                                      color: Colors.grey[100],
+                                      shape: BoxShape.circle,
+                                    ),
+                                    child: Icon(Icons.comment_outlined,
+                                        size: 48, color: Colors.grey[400]),
+                                  ),
+                                  const SizedBox(height: 16),
+                                  Text(
+                                    'No comments yet!',
+                                    style: GoogleFonts.poppins(
+                                      color: Colors.grey[600],
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    'Be the first to share your thoughts',
+                                    style: GoogleFonts.poppins(
+                                      color: Colors.grey[500],
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          }
+
+                          return ListView.separated(
                             shrinkWrap: true,
                             physics: const NeverScrollableScrollPhysics(),
                             itemCount: snapshot.data!.length,
+                            separatorBuilder: (context, index) =>
+                                const SizedBox(height: 8),
                             itemBuilder: (context, index) {
                               final comment = snapshot.data![index];
                               return Container(
                                 margin: const EdgeInsets.symmetric(
                                   horizontal: 16.0,
-                                  vertical: 4.0,
                                 ),
                                 decoration: BoxDecoration(
-                                  color: Colors.grey[50],
-                                  borderRadius: BorderRadius.circular(12),
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(16),
                                   border: Border.all(color: Colors.grey[200]!),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.grey.withOpacity(0.1),
+                                      spreadRadius: 1,
+                                      blurRadius: 3,
+                                      offset: const Offset(0, 1),
+                                    ),
+                                  ],
                                 ),
                                 child: Padding(
-                                  padding: const EdgeInsets.all(12.0),
+                                  padding: const EdgeInsets.all(16.0),
                                   child: Column(
                                     crossAxisAlignment:
                                         CrossAxisAlignment.start,
                                     children: [
                                       Row(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
                                         children: [
-                                          CircleAvatar(
-                                            backgroundColor: Colors.deepPurple,
-                                            child: Text(
-                                              comment['username'][0]
-                                                  .toUpperCase(),
-                                              style: GoogleFonts.poppins(
-                                                color: Colors.white,
-                                                fontWeight: FontWeight.bold,
+                                          // User Avatar
+                                          Container(
+                                            decoration: BoxDecoration(
+                                              shape: BoxShape.circle,
+                                              gradient: LinearGradient(
+                                                colors: [
+                                                  Colors.deepPurple,
+                                                  Colors.deepPurple.shade300,
+                                                ],
+                                              ),
+                                            ),
+                                            child: CircleAvatar(
+                                              backgroundColor:
+                                                  Colors.transparent,
+                                              child: Text(
+                                                comment['username'][0]
+                                                    .toUpperCase(),
+                                                style: GoogleFonts.poppins(
+                                                  color: Colors.white,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
                                               ),
                                             ),
                                           ),
                                           const SizedBox(width: 12),
+
+                                          // Comment Content
                                           Expanded(
                                             child: Column(
                                               crossAxisAlignment:
                                                   CrossAxisAlignment.start,
                                               children: [
-                                                _buildUserBadge(
-                                                    comment['username']),
+                                                // Username and Badge
+                                                Row(
+                                                  children: [
+                                                    _buildUserBadge(
+                                                        comment['username']),
+                                                    const Spacer(),
+                                                    if (comment['timestamp'] !=
+                                                        null)
+                                                      Text(
+                                                        _formatTimestamp(
+                                                            comment[
+                                                                'timestamp']),
+                                                        style:
+                                                            GoogleFonts.poppins(
+                                                          fontSize: 12,
+                                                          color:
+                                                              Colors.grey[500],
+                                                        ),
+                                                      ),
+                                                  ],
+                                                ),
+
+                                                // Comment Text
                                                 if (comment['content']
                                                     .isNotEmpty) ...[
-                                                  const SizedBox(height: 4),
+                                                  const SizedBox(height: 8),
                                                   Text(
                                                     comment['content'],
-                                                    style:
-                                                        GoogleFonts.poppins(),
+                                                    style: GoogleFonts.poppins(
+                                                      fontSize: 14,
+                                                      height: 1.4,
+                                                    ),
                                                   ),
                                                 ],
+
+                                                // Comment Media
+                                                _buildCommentMedia(comment),
                                               ],
                                             ),
                                           ),
                                         ],
                                       ),
-                                      _buildCommentMedia(comment),
                                     ],
                                   ),
                                 ),
@@ -985,6 +1626,9 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
                           );
                         },
                       ),
+
+                      // Add some bottom padding
+                      const SizedBox(height: 100),
                     ],
                   ),
                 ),
@@ -995,7 +1639,6 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
 
               // Enhanced Comment Input
               Container(
-                padding: const EdgeInsets.all(16.0),
                 decoration: BoxDecoration(
                   color: Colors.white,
                   boxShadow: [
@@ -1007,80 +1650,125 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
                     ),
                   ],
                 ),
-                child: Column(
-                  children: [
-                    // Media buttons
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                child: SafeArea(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
                       children: [
-                        IconButton(
-                          onPressed: _pickImages,
-                          icon: const Icon(Icons.image, color: Colors.green),
-                          tooltip: 'Add Images',
-                        ),
-                        IconButton(
-                          onPressed: _pickVideo,
-                          icon: const Icon(Icons.video_library,
-                              color: Colors.blue),
-                          tooltip: 'Add Video',
-                        ),
-                        IconButton(
-                          onPressed: _pickDocument,
-                          icon: const Icon(Icons.attach_file,
-                              color: Colors.orange),
-                          tooltip: 'Add Document',
-                        ),
-                        IconButton(
-                          onPressed: () {
-                            setState(() => _isEmojiVisible = !_isEmojiVisible);
-                          },
-                          icon: const Icon(Icons.emoji_emotions,
-                              color: Colors.amber),
-                          tooltip: 'Add Emoji',
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    // Comment input
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _commentController,
-                            decoration: InputDecoration(
-                              hintText: 'Write a comment...',
-                              hintStyle:
-                                  GoogleFonts.poppins(color: Colors.grey[500]),
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(25),
-                                borderSide:
-                                    BorderSide(color: Colors.grey[300]!),
+                        // Media attachment buttons
+                        Container(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                            children: [
+                              _buildMediaButton(
+                                icon: Icons.image,
+                                color: Colors.green,
+                                label: 'Images',
+                                onTap: _pickImages,
                               ),
-                              focusedBorder: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(25),
-                                borderSide:
-                                    const BorderSide(color: Colors.deepPurple),
+                              _buildMediaButton(
+                                icon: Icons.video_library,
+                                color: Colors.blue,
+                                label: 'Video',
+                                onTap: _pickVideo,
                               ),
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 16,
-                                vertical: 12,
+                              _buildMediaButton(
+                                icon: Icons.attach_file,
+                                color: Colors.orange,
+                                label: 'Document',
+                                onTap: _pickDocument,
+                              ),
+                              _buildMediaButton(
+                                icon: Icons.emoji_emotions,
+                                color: Colors.amber,
+                                label: 'Emoji',
+                                onTap: () {
+                                  setState(
+                                      () => _isEmojiVisible = !_isEmojiVisible);
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+
+                        const SizedBox(height: 12),
+
+                        // Comment input row
+                        Row(
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: _commentController,
+                                decoration: InputDecoration(
+                                  hintText: 'Share your thoughts...',
+                                  hintStyle: GoogleFonts.poppins(
+                                      color: Colors.grey[500]),
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(25),
+                                    borderSide:
+                                        BorderSide(color: Colors.grey[300]!),
+                                  ),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(25),
+                                    borderSide: const BorderSide(
+                                        color: Colors.deepPurple, width: 2),
+                                  ),
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 20,
+                                    vertical: 12,
+                                  ),
+                                  filled: true,
+                                  fillColor: Colors.grey[50],
+                                ),
+                                style: GoogleFonts.poppins(),
+                                maxLines: null,
+                                textCapitalization:
+                                    TextCapitalization.sentences,
                               ),
                             ),
-                            style: GoogleFonts.poppins(),
-                            maxLines: null,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        CircleAvatar(
-                          backgroundColor: Colors.deepPurple,
-                          child: IconButton(
-                            onPressed: _addComment,
-                            icon: const Icon(Icons.send, color: Colors.white),
-                          ),
+                            const SizedBox(width: 12),
+
+                            // Send button
+                            Container(
+                              decoration: BoxDecoration(
+                                gradient: const LinearGradient(
+                                  colors: [Colors.deepPurple, Colors.purple],
+                                ),
+                                shape: BoxShape.circle,
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.deepPurple.withOpacity(0.3),
+                                    spreadRadius: 1,
+                                    blurRadius: 3,
+                                    offset: const Offset(0, 2),
+                                  ),
+                                ],
+                              ),
+                              child: IconButton(
+                                onPressed: _isCommenting ? null : _addComment,
+                                icon: _isCommenting
+                                    ? const SizedBox(
+                                        width: 20,
+                                        height: 20,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          valueColor:
+                                              AlwaysStoppedAnimation<Color>(
+                                            Colors.white,
+                                          ),
+                                        ),
+                                      )
+                                    : const Icon(Icons.send,
+                                        color: Colors.white),
+                                tooltip: 'Send comment',
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
-                  ],
+                  ),
                 ),
               ),
 
@@ -1096,6 +1784,9 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
                         config: const Config(
                           height: 256,
                           checkPlatformCompatibility: true,
+                          emojiViewConfig: EmojiViewConfig(
+                            emojiSizeMax: 32,
+                          ),
                         ),
                       )
                     : null,
@@ -1106,161 +1797,461 @@ class _PostDetailsScreenState extends State<PostDetailsScreen> {
       ),
     );
   }
+
+  Widget _buildMediaButton({
+    required IconData icon,
+    required Color color,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color.withOpacity(0.3)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: color, size: 20),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: GoogleFonts.poppins(
+                fontSize: 10,
+                color: color,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _formatTimestamp(dynamic timestamp) {
+    if (timestamp == null) return '';
+
+    try {
+      DateTime dateTime;
+      if (timestamp is Timestamp) {
+        dateTime = timestamp.toDate();
+      } else {
+        return '';
+      }
+
+      final now = DateTime.now();
+      final difference = now.difference(dateTime);
+
+      if (difference.inMinutes < 1) {
+        return 'Just now';
+      } else if (difference.inMinutes < 60) {
+        return '${difference.inMinutes}m';
+      } else if (difference.inHours < 24) {
+        return '${difference.inHours}h';
+      } else if (difference.inDays < 7) {
+        return '${difference.inDays}d';
+      } else {
+        return '${dateTime.day}/${dateTime.month}/${dateTime.year}';
+      }
+    } catch (e) {
+      return '';
+    }
+  }
 }
 
-// Enhanced PDF Viewer Screen with better error handling
-class EnhancedPDFViewerScreen extends StatefulWidget {
-  final String url;
-  final String fileName;
+// Video Player Screen
+class VideoPlayerScreen extends StatefulWidget {
+  final String videoUrl;
 
-  const EnhancedPDFViewerScreen(
-      {super.key, required this.url, required this.fileName});
+  const VideoPlayerScreen({super.key, required this.videoUrl});
 
   @override
-  _EnhancedPDFViewerScreenState createState() =>
-      _EnhancedPDFViewerScreenState();
+  _VideoPlayerScreenState createState() => _VideoPlayerScreenState();
 }
 
-class _EnhancedPDFViewerScreenState extends State<EnhancedPDFViewerScreen> {
-  String? localPath;
-  bool isLoading = true;
-  String? error;
-  int currentPage = 0;
-  int totalPages = 0;
+class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
+  late VideoPlayerController _controller;
+  bool _isPlaying = false;
 
   @override
   void initState() {
     super.initState();
-    _downloadAndDisplayPDF();
+    _controller = VideoPlayerController.network(widget.videoUrl)
+      ..initialize().then((_) {
+        setState(() {});
+      });
   }
 
-  Future<void> _downloadAndDisplayPDF() async {
-    try {
-      final response = await http.get(Uri.parse(widget.url));
-
-      if (response.statusCode == 200) {
-        final dir = await getTemporaryDirectory();
-        final fileName =
-            widget.fileName.replaceAll(RegExp(r'[^\w\s\-_\.]'), '');
-        final filePath = '${dir.path}/$fileName';
-
-        final file = File(filePath);
-        await file.writeAsBytes(response.bodyBytes);
-
-        setState(() {
-          localPath = filePath;
-          isLoading = false;
-        });
-      } else {
-        throw 'Failed to download PDF: ${response.statusCode}';
-      }
-    } catch (e) {
-      setState(() {
-        error = e.toString();
-        isLoading = false;
-      });
-    }
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.black,
       appBar: AppBar(
-        title: Text(widget.fileName, style: GoogleFonts.poppins()),
+        backgroundColor: Colors.transparent,
+        foregroundColor: Colors.white,
+        elevation: 0,
+      ),
+      body: Center(
+        child: _controller.value.isInitialized
+            ? AspectRatio(
+                aspectRatio: _controller.value.aspectRatio,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    VideoPlayer(_controller),
+                    GestureDetector(
+                      onTap: () {
+                        setState(() {
+                          if (_controller.value.isPlaying) {
+                            _controller.pause();
+                            _isPlaying = false;
+                          } else {
+                            _controller.play();
+                            _isPlaying = true;
+                          }
+                        });
+                      },
+                      child: Container(
+                        color: Colors.transparent,
+                        width: double.infinity,
+                        height: double.infinity,
+                      ),
+                    ),
+                    if (!_controller.value.isPlaying)
+                      Container(
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.6),
+                          shape: BoxShape.circle,
+                        ),
+                        child: IconButton(
+                          icon: const Icon(Icons.play_arrow,
+                              color: Colors.white, size: 64),
+                          onPressed: () {
+                            _controller.play();
+                            setState(() => _isPlaying = true);
+                          },
+                        ),
+                      ),
+                  ],
+                ),
+              )
+            : const SpinKitFadingCircle(color: Colors.white),
+      ),
+    );
+  }
+}
+
+// PDF Viewer Screen
+class PDFViewerScreen extends StatefulWidget {
+  final String filePath;
+  final String title;
+
+  const PDFViewerScreen({
+    super.key,
+    required this.filePath,
+    required this.title,
+  });
+
+  @override
+  _PDFViewerScreenState createState() => _PDFViewerScreenState();
+}
+
+class _PDFViewerScreenState extends State<PDFViewerScreen> {
+  int? totalPages = 0;
+  int currentPage = 0;
+  bool isReady = false;
+  String errorMessage = '';
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          widget.title,
+          style: GoogleFonts.poppins(fontSize: 16),
+          overflow: TextOverflow.ellipsis,
+        ),
         backgroundColor: Colors.deepPurple,
         foregroundColor: Colors.white,
+        elevation: 0,
         actions: [
-          if (totalPages > 0)
-            Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: Center(
-                child: Text(
-                  '${currentPage + 1}/$totalPages',
-                  style: GoogleFonts.poppins(color: Colors.white),
-                ),
-              ),
-            ),
           IconButton(
             icon: const Icon(Icons.share),
             onPressed: () {
-              Share.share(widget.url);
+              Share.shareXFiles([XFile(widget.filePath)]);
             },
           ),
         ],
       ),
-      body: isLoading
-          ? const Center(
-              child: Column(
+      body: Stack(
+        children: [
+          PDFView(
+            filePath: widget.filePath,
+            enableSwipe: true,
+            swipeHorizontal: false,
+            autoSpacing: false,
+            pageFling: true,
+            pageSnap: true,
+            defaultPage: currentPage,
+            fitPolicy: FitPolicy.BOTH,
+            preventLinkNavigation: false,
+            onRender: (pages) {
+              setState(() {
+                totalPages = pages;
+                isReady = true;
+              });
+            },
+            onError: (error) {
+              setState(() {
+                errorMessage = error.toString();
+              });
+            },
+            onPageError: (page, error) {
+              setState(() {
+                errorMessage = '$page: ${error.toString()}';
+              });
+            },
+            onViewCreated: (PDFViewController pdfViewController) {
+              // PDF controller can be used for additional controls
+            },
+            onLinkHandler: (String? uri) {
+              // Handle link clicks in PDF
+            },
+            onPageChanged: (int? page, int? total) {
+              setState(() {
+                currentPage = page ?? 0;
+              });
+            },
+          ),
+          if (errorMessage.isNotEmpty)
+            Center(
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                margin: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.red[50],
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.red[200]!),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.error, color: Colors.red, size: 48),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Error loading PDF',
+                      style: GoogleFonts.poppins(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.red[800],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      errorMessage,
+                      style: GoogleFonts.poppins(
+                        fontSize: 14,
+                        color: Colors.red[600],
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          if (!isReady && errorMessage.isEmpty)
+            const Center(
+              child: SpinKitFadingCircle(color: Colors.deepPurple),
+            ),
+        ],
+      ),
+      bottomNavigationBar: isReady
+          ? Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.grey.withOpacity(0.2),
+                    spreadRadius: 1,
+                    blurRadius: 5,
+                    offset: const Offset(0, -2),
+                  ),
+                ],
+              ),
+              child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
-                  Text('Loading PDF...'),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.deepPurple.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      'Page ${currentPage + 1} of $totalPages',
+                      style: GoogleFonts.poppins(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w500,
+                        color: Colors.deepPurple,
+                      ),
+                    ),
+                  ),
                 ],
               ),
             )
-          : error != null
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
+          : null,
+    );
+  }
+}
+
+// Text Document Viewer Dialog
+class TextDocumentViewer extends StatelessWidget {
+  final String content;
+  final String title;
+
+  const TextDocumentViewer({
+    super.key,
+    required this.content,
+    required this.title,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Container(
+        width: MediaQuery.of(context).size.width * 0.9,
+        height: MediaQuery.of(context).size.height * 0.8,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Column(
+          children: [
+            // Header
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Colors.deepPurple, Colors.purple],
+                ),
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(20),
+                  topRight: Radius.circular(20),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.2),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.text_snippet, color: Colors.white),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: GoogleFonts.poppins(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+            ),
+
+            // Content
+            Expanded(
+              child: Container(
+                padding: const EdgeInsets.all(20),
+                child: SingleChildScrollView(
+                  child: SelectableText(
+                    content,
+                    style: GoogleFonts.poppins(
+                      fontSize: 14,
+                      height: 1.6,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+            // Footer with actions
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.grey[50],
+                borderRadius: const BorderRadius.only(
+                  bottomLeft: Radius.circular(20),
+                  bottomRight: Radius.circular(20),
+                ),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    '${content.length} characters',
+                    style: GoogleFonts.poppins(
+                      fontSize: 12,
+                      color: Colors.grey[600],
+                    ),
+                  ),
+                  Row(
                     children: [
-                      const Icon(Icons.error, size: 64, color: Colors.red),
-                      const SizedBox(height: 16),
-                      Text('Error loading PDF', style: GoogleFonts.poppins()),
-                      const SizedBox(height: 8),
-                      Padding(
-                        padding: const EdgeInsets.all(16.0),
-                        child: Text(
-                          error!,
-                          style: GoogleFonts.poppins(fontSize: 12),
-                          textAlign: TextAlign.center,
+                      TextButton.icon(
+                        onPressed: () {
+                          Share.share(content, subject: title);
+                        },
+                        icon: const Icon(Icons.share, size: 16),
+                        label: Text('Share', style: GoogleFonts.poppins()),
+                        style: TextButton.styleFrom(
+                          foregroundColor: Colors.deepPurple,
                         ),
                       ),
-                      const SizedBox(height: 16),
+                      const SizedBox(width: 8),
                       ElevatedButton(
-                        onPressed: () {
-                          Navigator.pushReplacement(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => WebDocumentViewer(
-                                url: widget.url,
-                                fileName: widget.fileName,
-                              ),
-                            ),
-                          );
-                        },
-                        child: Text('Open in Web Viewer',
-                            style: GoogleFonts.poppins()),
+                        onPressed: () => Navigator.pop(context),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.deepPurple,
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                        ),
+                        child: Text('Close', style: GoogleFonts.poppins()),
                       ),
                     ],
                   ),
-                )
-              : PDFView(
-                  filePath: localPath!,
-                  enableSwipe: true,
-                  swipeHorizontal: false,
-                  autoSpacing: false,
-                  pageFling: true,
-                  pageSnap: true,
-                  onRender: (pages) {
-                    setState(() {
-                      totalPages = pages!;
-                    });
-                  },
-                  onPageChanged: (page, total) {
-                    setState(() {
-                      currentPage = page!;
-                    });
-                  },
-                  onError: (error) {
-                    setState(() {
-                      this.error = error.toString();
-                    });
-                  },
-                  onPageError: (page, error) {
-                    print('PDF Page Error: $page: $error');
-                  },
-                ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -1270,8 +2261,11 @@ class EnhancedOfficeDocumentViewer extends StatefulWidget {
   final String url;
   final String fileName;
 
-  const EnhancedOfficeDocumentViewer(
-      {super.key, required this.url, required this.fileName});
+  const EnhancedOfficeDocumentViewer({
+    super.key,
+    required this.url,
+    required this.fileName,
+  });
 
   @override
   _EnhancedOfficeDocumentViewerState createState() =>
@@ -1346,12 +2340,14 @@ class _EnhancedOfficeDocumentViewerState
         title: Text(widget.fileName, style: GoogleFonts.poppins()),
         backgroundColor: Colors.deepPurple,
         foregroundColor: Colors.white,
+        elevation: 0,
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: () {
               _controller.reload();
             },
+            tooltip: 'Refresh',
           ),
           if (hasError && viewerIndex < viewers.length - 1)
             IconButton(
@@ -1362,16 +2358,19 @@ class _EnhancedOfficeDocumentViewerState
           IconButton(
             icon: const Icon(Icons.open_in_browser),
             onPressed: () async {
-              if (await canLaunch(widget.url)) {
-                await launch(widget.url);
+              final url = Uri.parse(widget.url);
+              if (await canLaunchUrl(url)) {
+                await launchUrl(url, mode: LaunchMode.externalApplication);
               }
             },
+            tooltip: 'Open externally',
           ),
           IconButton(
             icon: const Icon(Icons.share),
             onPressed: () {
               Share.share(widget.url);
             },
+            tooltip: 'Share',
           ),
         ],
       ),
@@ -1381,372 +2380,109 @@ class _EnhancedOfficeDocumentViewerState
             WebViewWidget(controller: _controller)
           else
             Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.error, size: 64, color: Colors.orange),
-                  const SizedBox(height: 16),
-                  Text('Unable to display document',
-                      style: GoogleFonts.poppins()),
-                  if (errorMessage != null) ...[
-                    const SizedBox(height: 8),
-                    Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Text(
-                        errorMessage!,
-                        style: GoogleFonts.poppins(fontSize: 12),
-                        textAlign: TextAlign.center,
+              child: Container(
+                padding: const EdgeInsets.all(24),
+                margin: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.orange[50],
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.orange[200]!),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.orange[100],
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.warning,
+                          size: 48, color: Colors.orange),
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Unable to display document',
+                      style: GoogleFonts.poppins(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.orange[800],
                       ),
                     ),
-                  ],
-                  const SizedBox(height: 16),
-                  if (viewerIndex < viewers.length - 1)
-                    ElevatedButton(
-                      onPressed: _tryNextViewer,
-                      child: Text('Try Different Viewer',
-                          style: GoogleFonts.poppins()),
-                    ),
-                  const SizedBox(height: 8),
-                  ElevatedButton(
-                    onPressed: () async {
-                      if (await canLaunch(widget.url)) {
-                        await launch(widget.url);
-                      }
-                    },
-                    child:
-                        Text('Open Externally', style: GoogleFonts.poppins()),
-                  ),
-                ],
-              ),
-            ),
-          if (isLoading)
-            const Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
-                  Text('Loading document...'),
-                ],
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-// Web Document Viewer as fallback
-class WebDocumentViewer extends StatefulWidget {
-  final String url;
-  final String fileName;
-
-  const WebDocumentViewer(
-      {super.key, required this.url, required this.fileName});
-
-  @override
-  _WebDocumentViewerState createState() => _WebDocumentViewerState();
-}
-
-class _WebDocumentViewerState extends State<WebDocumentViewer> {
-  late WebViewController _controller;
-  bool isLoading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onPageStarted: (String url) {
-            setState(() {
-              isLoading = true;
-            });
-          },
-          onPageFinished: (String url) {
-            setState(() {
-              isLoading = false;
-            });
-          },
-        ),
-      )
-      ..loadRequest(Uri.parse(widget.url));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.fileName, style: GoogleFonts.poppins()),
-        backgroundColor: Colors.deepPurple,
-        foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: () {
-              _controller.reload();
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.share),
-            onPressed: () {
-              Share.share(widget.url);
-            },
-          ),
-        ],
-      ),
-      body: Stack(
-        children: [
-          WebViewWidget(controller: _controller),
-          if (isLoading)
-            const Center(
-              child: CircularProgressIndicator(),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-// Enhanced Text Document Viewer
-class TextDocumentViewer extends StatefulWidget {
-  final String content;
-  final String fileName;
-
-  const TextDocumentViewer({
-    super.key,
-    required this.content,
-    required this.fileName,
-  });
-
-  @override
-  _TextDocumentViewerState createState() => _TextDocumentViewerState();
-}
-
-class _TextDocumentViewerState extends State<TextDocumentViewer> {
-  double _fontSize = 14.0;
-  bool _darkMode = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.fileName, style: GoogleFonts.poppins()),
-        backgroundColor: Colors.deepPurple,
-        foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            icon: Icon(_darkMode ? Icons.light_mode : Icons.dark_mode),
-            onPressed: () {
-              setState(() {
-                _darkMode = !_darkMode;
-              });
-            },
-          ),
-          PopupMenuButton<String>(
-            onSelected: (value) {
-              switch (value) {
-                case 'increase':
-                  setState(() {
-                    _fontSize = (_fontSize + 2).clamp(10.0, 24.0);
-                  });
-                  break;
-                case 'decrease':
-                  setState(() {
-                    _fontSize = (_fontSize - 2).clamp(10.0, 24.0);
-                  });
-                  break;
-              }
-            },
-            itemBuilder: (context) => [
-              PopupMenuItem(
-                value: 'increase',
-                child: Row(
-                  children: [
-                    const Icon(Icons.zoom_in),
-                    const SizedBox(width: 8),
-                    Text('Increase Font', style: GoogleFonts.poppins()),
-                  ],
-                ),
-              ),
-              PopupMenuItem(
-                value: 'decrease',
-                child: Row(
-                  children: [
-                    const Icon(Icons.zoom_out),
-                    const SizedBox(width: 8),
-                    Text('Decrease Font', style: GoogleFonts.poppins()),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          IconButton(
-            icon: const Icon(Icons.share),
-            onPressed: () {
-              Share.share(widget.content);
-            },
-          ),
-        ],
-      ),
-      backgroundColor: _darkMode ? Colors.grey[900] : Colors.white,
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: SingleChildScrollView(
-          child: SelectableText(
-            widget.content,
-            style: GoogleFonts.poppins(
-              fontSize: _fontSize,
-              height: 1.5,
-              color: _darkMode ? Colors.white : Colors.black,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// Generic Document Viewer for unsupported formats
-class GenericDocumentViewer extends StatefulWidget {
-  final String url;
-  final String fileName;
-
-  const GenericDocumentViewer(
-      {super.key, required this.url, required this.fileName});
-
-  @override
-  _GenericDocumentViewerState createState() => _GenericDocumentViewerState();
-}
-
-class _GenericDocumentViewerState extends State<GenericDocumentViewer> {
-  String? content;
-  bool isLoading = true;
-  String? error;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadContent();
-  }
-
-  Future<void> _loadContent() async {
-    try {
-      final response = await http.get(Uri.parse(widget.url));
-      if (response.statusCode == 200) {
-        setState(() {
-          content = utf8.decode(response.bodyBytes);
-          isLoading = false;
-        });
-      } else {
-        throw 'Failed to load document: ${response.statusCode}';
-      }
-    } catch (e) {
-      setState(() {
-        error = e.toString();
-        isLoading = false;
-      });
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.fileName, style: GoogleFonts.poppins()),
-        backgroundColor: Colors.deepPurple,
-        foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.open_in_browser),
-            onPressed: () async {
-              if (await canLaunch(widget.url)) {
-                await launch(widget.url);
-              }
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.share),
-            onPressed: () {
-              Share.share(widget.url);
-            },
-          ),
-        ],
-      ),
-      body: isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : error != null
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.error, size: 64, color: Colors.red),
-                      const SizedBox(height: 16),
-                      Text('Error loading document',
-                          style: GoogleFonts.poppins()),
+                    if (errorMessage != null) ...[
                       const SizedBox(height: 8),
                       Padding(
-                        padding: const EdgeInsets.all(16.0),
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
                         child: Text(
-                          error!,
-                          style: GoogleFonts.poppins(fontSize: 12),
+                          errorMessage!,
+                          style: GoogleFonts.poppins(
+                            fontSize: 12,
+                            color: Colors.orange[700],
+                          ),
                           textAlign: TextAlign.center,
                         ),
                       ),
-                      const SizedBox(height: 16),
-                      ElevatedButton(
-                        onPressed: () async {
-                          if (await canLaunch(widget.url)) {
-                            await launch(widget.url);
-                          }
-                        },
-                        child: Text('Open Externally',
-                            style: GoogleFonts.poppins()),
-                      ),
                     ],
-                  ),
-                )
-              : Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: Colors.blue[50],
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: Colors.blue[200]!),
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.info, color: Colors.blue),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                'This document format may not display correctly. Consider opening it externally.',
-                                style: GoogleFonts.poppins(fontSize: 12),
-                              ),
+                    const SizedBox(height: 24),
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 12,
+                      children: [
+                        if (viewerIndex < viewers.length - 1)
+                          ElevatedButton.icon(
+                            onPressed: _tryNextViewer,
+                            icon: const Icon(Icons.swap_horiz),
+                            label: Text(
+                              'Try Different Viewer',
+                              style: GoogleFonts.poppins(),
                             ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      Expanded(
-                        child: SingleChildScrollView(
-                          child: SelectableText(
-                            content ?? 'No content available',
-                            style: GoogleFonts.poppins(
-                              fontSize: 14,
-                              height: 1.5,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.orange,
+                              foregroundColor: Colors.white,
                             ),
                           ),
+                        ElevatedButton.icon(
+                          onPressed: () async {
+                            final url = Uri.parse(widget.url);
+                            if (await canLaunchUrl(url)) {
+                              await launchUrl(
+                                url,
+                                mode: LaunchMode.externalApplication,
+                              );
+                            }
+                          },
+                          icon: const Icon(Icons.open_in_browser),
+                          label: Text(
+                            'Open Externally',
+                            style: GoogleFonts.poppins(),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.deepPurple,
+                            foregroundColor: Colors.white,
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
+                      ],
+                    ),
+                  ],
                 ),
+              ),
+            ),
+          if (isLoading)
+            Container(
+              color: Colors.white.withOpacity(0.9),
+              child: const Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    SpinKitFadingCircle(color: Colors.deepPurple),
+                    SizedBox(height: 16),
+                    Text('Loading document...'),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }
